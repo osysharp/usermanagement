@@ -1,0 +1,37 @@
+// WHAT THE PEOPLE PAGES COST AS THEY GROW — the integrations page says each integration's roles and live keys, and reads
+// them once for the page however many integrations there are. The test asks once with one integration and once with
+// six, and a read per integration turns it red with both numbers. The team is access.test.osy's `Team`.
+using Osysharp.Identity;
+using Osysharp.UserAccounts;
+using Osysharp.UserManagement;
+
+/// ⭐ THE INTEGRATIONS PAGE READS ROLES AND KEYS ONCE — not a role read and a key count for every integration.
+[Test(Team)]
+void the_integrations_page_reads_the_same_however_many_integrations_there_are() {
+  runas (Sam) {
+    var first = AddIntegration("Program 1", AppRole.Agent, reason: "A test");
+    IssueApiKey(first, "Key 1");
+  }
+  var one = 0;
+  runas (Sam) {
+    var mark = Cost.Mark();
+    IntegrationLines();
+    one = Cost.StatementsSince(mark);
+  }
+  runas (Sam) {
+    for (var i = 2; i <= 6; i++) {
+      var made = AddIntegration("Program " + i, AppRole.Agent, reason: "A test");
+      IssueApiKey(made, "Key " + i);
+    }
+  }
+  runas (Sam) {
+    var mark = Cost.Mark();
+    var lines = IntegrationLines();
+    var six = Cost.StatementsSince(mark);
+    Log.Information("IntegrationLines: " + one + " statements with one integration, " + six + " with six");
+    Assert.Equal(6, lines.Count);
+    Assert.Equal(1, lines.Single(l => l.Name == "Program 6").Keys);
+    Assert.Equal("Agent", lines.Single(l => l.Name == "Program 6").Roles);
+    Assert.Equal(one, six);
+  }
+}

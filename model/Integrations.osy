@@ -1,0 +1,143 @@
+namespace Osysharp.UserManagement;
+
+using Osysharp.Identity;
+
+// INTEGRATIONS — a program the app is used BY: Zapier, a nightly export, a partner's system. It is an account of its own,
+// with a name, a person who answers for it, the roles it was given, and API keys — and nothing a person has: no mailbox,
+// no password, no way to sign in. So what it does is recorded under its own name ("Zapier assigned the ticket"), never
+// under a teammate's, and switching it off is one act that takes every key it holds with it.
+//
+// ⚑ ADDED LIKE ANY OTHER CHANGE TO ACCESS. A people manager records an `AccessChange` (`IntegrationAdded`) naming it, its
+//   role and its owner; the change's run makes the account and grants the role in the same commit. Its keys are issued
+//   and revoked as everybody's are (`IssueApiKey`, `RevokeApiKey`), and deactivating it (`Deactivate`) revokes them all.
+//
+// ⚑ IT OUTLIVES ITS OWNER. Deactivating the person who answers for it ends their sessions and their keys, never the
+//   integration's: a program the team depends on does not stop because somebody left. The page says "owner deactivated",
+//   and a manager gives it to somebody who is here (`ReassignIntegration`), recorded like every other change to access.
+
+/// A program that calls the app's API under its own name — never a person. It holds API keys and roles, and cannot sign
+/// in: it has no password, and its address is one no mail is ever delivered to, kept only because every account has one.
+///
+/// SECURITY-INVARIANT(an-integration-never-signs-in): an `Integration` is never handed a session. No sign-in door of the
+/// kits admits it — every one of them looks the account up as an `Osysharp.UserAccounts` `User`, which it is not — it holds
+/// no password, and its address is unique, unguessable and undeliverable (`.invalid`), so no code, link or invitation can
+/// reach it. It acts only through an API key a people manager issued it, and nobody — itself included, holding its own
+/// key — edits it afterwards: a renamed integration would put another name on everything it has done. Guarded by
+/// tests/integrations.test.osy (`an_integration_cannot_sign_in_by_any_door`, `an_integration_cannot_rename_itself`).
+public entity Integration : Principal {
+  /// The person who answers for it — who to ask what it is and whether it is still needed.
+  [Required] Principal Owner;
+
+  security {
+    // Seen as every account is — its name is on what it does.
+    allow read when IsAuthenticated || IsAuthenticator;
+    // Made and changed by its access change's run alone (the system). Nobody edits it — a manager adds a new one
+    // instead, and it cannot edit itself with its own key.
+    deny update;
+  }
+}
+
+/// The address an integration is given — every account has one, and this one reaches nobody: `.invalid` is a name the
+/// internet reserves for exactly that (RFC 2606), and the random part makes it one nobody can guess or claim elsewhere.
+string NewIntegrationAddress() {
+  return "integration-" + Security.RandomHex(12) + "@integrations.invalid";
+}
+
+/// Add an integration called `name`, holding the app role `r` (one the app offers), answered for by `owner` (the caller
+/// when not given). Answers the integration — issue it a key next (`IssueApiKey`). Committed.
+public Integration AddIntegration(string name, role r, Principal? owner = null, string reason = "") {
+  var me = Session.CurrentUser;
+  if (me == null) { throw new NotAuthorized("Sign in to add an integration."); }
+  var shown = name.Trim();
+  if (shown == "") { throw new ValidationException("Name the integration — what it is, as you will recognise it in the list: “Zapier”."); }
+  if (shown.Length > 100) { throw new ValidationException("Keep the name under 100 characters — it is what every record it makes is filed under."); }
+  var answers = owner ?? me!;
+  var problem = AccessProblem(answers, me!, AccessChangeKind.IntegrationAdded, r, null, reason);
+  if (problem != "") { throw new ValidationException(problem); }
+  var made = new AccessChange { Person = answers, By = me!, Kind = AccessChangeKind.IntegrationAdded, Role = r,
+                                IntegrationName = shown, Reason = reason.Trim(), At = DateTime.UtcNow };
+  UnitOfWork.Commit();
+  ThrowIfRefused(made.Id, "The integration was not added.");
+  return AccessChange.Single(c => c.Id == made.Id).Integration!;
+}
+
+/// Give `integration` to `owner` to answer for — the person to ask what it is and whether it is still needed, typically
+/// when the one who answered for it has left. Recorded as a change to access (`IntegrationReassigned`), so the trail says
+/// who handed it over, to whom, and why; its keys and its role are untouched. Committed.
+public AccessChange ReassignIntegration(Integration integration, Principal owner, string reason = "") {
+  var me = Session.CurrentUser;
+  if (me == null) { throw new NotAuthorized("Sign in to reassign an integration."); }
+  var problem = AccessProblem(owner, me!, AccessChangeKind.IntegrationReassigned, null, null, reason);
+  if (problem == "") { problem = ReassignProblem(integration, owner); }
+  if (problem != "") { throw new ValidationException(problem); }
+  var made = new AccessChange { Person = owner, By = me!, Kind = AccessChangeKind.IntegrationReassigned,
+                                Integration = integration, IntegrationName = integration.DisplayName,
+                                Reason = reason.Trim(), At = DateTime.UtcNow };
+  UnitOfWork.Commit();
+  ThrowIfRefused(made.Id, "The integration was not reassigned.");
+  return AccessChange.Single(c => c.Id == made.Id);
+}
+
+/// "" when `integration` can be given to `owner`, else why not: it must name an integration, and somebody new.
+string ReassignProblem(Integration? integration, Principal owner) {
+  if (integration == null) { return "Say which integration."; }
+  if (integration!.Owner.Id == owner.Id) { return NameOf(owner) + " already answers for " + integration!.DisplayName + "."; }
+  return "";
+}
+
+/// Make the integration a change names, give it its role, and tell the app the role was given (as the system — its run).
+void MakeIntegration(AccessChange change) {
+  var r = change.Role!.Value;
+  var made = new Integration { Email = NewIntegrationAddress(), DisplayName = change.IntegrationName ?? "Integration",
+                               Owner = change.Person, IsActive = true, Source = IdentitySource.Local };
+  new RoleGrant { Member = made, Role = r };
+  change.Integration = made;
+  App.Setting<RolesSetup>().Events.Granted(made, r);
+}
+
+// ── what the page shows ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/// One integration as the page lists it.
+public class IntegrationLine {
+  public Guid Id;
+  public string Name = "";
+  public string Owner = "";
+  /// Whether the person who answers for it can still sign in — an integration whose owner left keeps working, and the
+  /// page says so, so a manager gives it to somebody who is here (`ReassignIntegration`).
+  public bool OwnerActive = true;
+  public string Roles = "";
+  public bool Active = true;
+  public int Keys = 0;
+}
+
+/// The integrations, by name: those switched on first, then (when `withInactive`) those switched off.
+public List<IntegrationLine> IntegrationLines(bool withInactive = false) {
+  List<IntegrationLine> lines = [];
+  var integrations = Integration.Where(x => withInactive || x.IsActive).Include(x => x.Owner).OrderBy(x => x.DisplayName).Take(200).ToList();
+  // Their roles and live keys read once for the page, not once per integration.
+  var ids = integrations.Select(i => i.Id).ToList();
+  var grants = PeopleGrantsOf(ids);
+  var keys = new Dictionary<Guid, int>();
+  if (ids.Count > 0) {
+    foreach (var k in ApiKey.Where(k => ids.Contains(k.Holder.Id) && k.Slot > 0 && k.RevokedAt == null)
+        .GroupBy(k => k.Holder.Id).Select(g => new IntegrationKeyCount { Holder = g.Key, Count = g.Count() }).ToList()) {
+      keys[k.Holder] = k.Count;
+    }
+  }
+  foreach (var i in integrations) {
+    var roles = new List<string>();
+    foreach (var g in grants.Where(x => x.Member.Id == i.Id)) {
+      var label = RoleLabel(g.Role);
+      if (label != "") { roles.Add(label); }
+    }
+    lines.Add(new IntegrationLine { Id = i.Id, Name = i.DisplayName, Owner = NameOf(i.Owner), OwnerActive = i.Owner.IsActive, Roles = string.Join(", ", roles),
+      Active = i.IsActive, Keys = keys.ContainsKey(i.Id) ? keys[i.Id] : 0 });
+  }
+  return lines.OrderBy(l => l.Active ? 0 : 1).ToList();
+}
+
+/// How many live keys one integration holds — a row of `IntegrationLines`' grouped count.
+public class IntegrationKeyCount {
+  public Guid Holder;
+  public int Count;
+}

@@ -1,0 +1,16 @@
+// The user manager on a page of this app's — gated by the app's own policy, as the kit asks.
+using Osysharp.UserManagement;
+using Osysharp.Invitations;
+
+[Route("/")] [Render(CSR)] [Title("People Desk")]
+component Home() { render { Text("Welcome to the desk"); } }
+
+[Route("/people")] [Authorize(ManagesPeople)] [Render(CSR)] [Title("People")]
+component PeoplePage() { render { PeopleManager(canInvite: MayInvite); } }
+
+[Route("/people/keys")] [Authorize(ManagesPeople)] [Render(CSR)] [Title("API keys")]
+component KeysPage() { render { ApiKeyManager(); } }
+
+[Route("/people/trail")] [Authorize(ManagesPeople)] [Render(CSR)] [Title("Access changes")]
+component TrailPage() { render { Stack(p: 5) { AccessTrailList(); } } }
+

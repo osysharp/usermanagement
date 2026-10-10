@@ -1,0 +1,332 @@
+// The user manager's screens — the people list with one person open beside it, and the app-wide trail of changes.
+// Set in Osysharp.Ui's settings vocabulary (`SettingsPage`, `SettingsSection`), so they sit in an app's settings area
+// like every other admin page. Every colour, face and size is a theme token.
+//
+// ⚑ NO POLICY IS NAMED IN HERE (the kit cannot read the app's `ManagesPeople` in its own code): the app gates the PAGE
+//   these sit on, and passes `canInvite:` from its own policy. A control offered to somebody who may not use it is
+//   refused by the kit's rules, with the reason.
+
+namespace Osysharp.UserManagement;
+
+using Osysharp.Identity;
+using Osysharp.UserAccounts;
+using Osysharp.Invitations;
+using Osysharp.Ui;
+
+/// The user manager: search, the people, one person in full beside the list (a screen of its own on a phone), and the
+/// invitations still waiting. `canInvite` is the app's answer to "may this person invite?" (`canInvite: MayInvite`).
+/// In a test: `Ui.Fill("Search people", "ada"); Ui.Click("Ada Lindqvist"); Ui.Click("Sign out everywhere")`.
+[Composable]
+public component PeopleManager(bool canInvite = true) {
+  string search = "";
+  bool showInactive = true;
+  List<PersonRow> people = [];
+  Guid open = Guid.Empty;
+  PersonDetail detail = new PersonDetail();
+  bool inviting = false;
+
+  on mount { people = PeopleList(); }
+
+  action Find() { people = PeopleList(search, showInactive); }
+  action Open(Guid id) { detail = PersonDetailOf(id); open = id; }
+  action Close() { open = Guid.Empty; }
+  action Changed() { people = PeopleList(search, showInactive); if (open != Guid.Empty) { detail = PersonDetailOf(open); } }
+  action StartInvite() { inviting = true; }
+  action StopInvite() { inviting = false; }
+  action Invited() { inviting = false; }
+
+  render {
+    Row(gap: 0, align: Align.Stretch, w: "100%", minH: "100%") {
+      if (open == Guid.Empty || Layout.AtLeast(Laptop)) {
+        Stack(gap: 4, grow: 1, minW: "0", maxW: "1120px", p: 5) {
+          PageHead("People", subtitle: "Who works here, what each may do, and who changed it.") {
+            if (canInvite) { Button("Invite someone", onPress: StartInvite, tone: Tone.Primary, shortcut: "I"); }
+          }
+          // ── the list: a dense table on its own surface, its toolbar above it ──────────────────────────────────
+          // ⚑ THE SWITCHBOARD FLOOR'S DENSE LIST (the helpdesk queue's): a compact filter rather than a page-wide
+          //   field, a header row in caption type, 44px rows with an avatar, roles as chips, and the last sign-in in
+          //   words ("2 h ago", "Never") — so the list reads as a list, never as an unfinished form.
+          Stack(gap: 0, bg: Colors.Surface, borderW: 1, border: Colors.Border, rounded: Radius.Lg, overflow: Overflow.Hidden) {
+            Row(gap: 3, align: Align.Center, wrap: Wrapping.Wrap, px: 3, py: 2, borderBW: 1, border: Colors.Border) {
+              // The field IS the box (so its focus ring is the box's), with the glass laid over its left edge.
+              Box(position: Position.Relative, w: Layout.AtLeast(Tablet) ? "280px" : "100%") {
+                Input(value: search, label: "Search people", placeholder: "Find by name or address", onEnter: Find,
+                      w: "100%", h: Length.ControlSm, pl: 7, pr: 2, rounded: Radius.Md, borderW: 1, border: Colors.Border,
+                      bg: Colors.Bg, fontSize: FontSize.Label);
+                Box(position: Position.Absolute, left: "10px", top: "0", bottom: "0", display: Display.Flex,
+                    align: Align.Center, decorative: true) {
+                  Icon(Icons.Search, size: 14, color: Colors.TextMuted);
+                }
+              }
+              Checkbox("Show deactivated people", value: showInactive, onToggle: Find);
+              Spacer();
+              Text(people.Count == 1 ? "1 person" : people.Count + " people", fontFamily: Font.Mono,
+                   fontSize: FontSize.Caption, color: Colors.TextMuted, fontVariant: FontVariant.TabularNums);
+            }
+            if (Layout.AtLeast(Tablet)) {
+              Row(gap: 3, align: Align.Center, px: 3, py: 2, bg: Colors.Sunken, borderBW: 1, border: Colors.Border, decorative: true) {
+                Text("Person", fontSize: FontSize.Caption, fontWeight: FontWeight.Medium, color: Colors.TextMuted, grow: 1, pl: 7);
+                Text("Roles", fontSize: FontSize.Caption, fontWeight: FontWeight.Medium, color: Colors.TextMuted, w: "200px");
+                Text("Two-step", fontSize: FontSize.Caption, fontWeight: FontWeight.Medium, color: Colors.TextMuted, w: "88px");
+                Text("Last signed in", fontSize: FontSize.Caption, fontWeight: FontWeight.Medium, color: Colors.TextMuted, w: "104px",
+                     textAlign: TextAlign.Right);
+              }
+            }
+            Stack(gap: 0, role: UiRole.List, label: "Everyone") {
+              if (people.Count == 0) {
+                Box(p: 5) {
+                  EmptyState("Nobody matches", body: search == "" ? "There is nobody here yet — invite someone." : $"Nobody's name or address contains “{search}”.");
+                }
+              }
+              foreach (var p in people) { PersonListRow(p, p.Id == open, () => Open(p.Id), Layout.AtLeast(Tablet)); }
+            }
+          }
+          Stack(gap: 2, pt: 2) {
+            Text("Waiting invitations", fontWeight: FontWeight.Semibold);
+            InvitationList(canChange: canInvite);
+          }
+        }
+      }
+      if (open != Guid.Empty) {
+        Stack(gap: 0, w: Layout.AtLeast(Laptop) ? "420px" : "100%", shrink: 0, borderLW: 1, border: Colors.Border,
+              bg: Colors.Surface, minH: "100%") {
+          PersonPanel(detail, Changed, Close);
+        }
+      }
+    }
+    if (inviting) {
+      Dialog("Invite someone", onDismiss: StopInvite, subtitle: "They get a link by mail, and join with the role you choose.") {
+        InviteForm(onSent: Invited, canSend: canInvite);
+      }
+    }
+  }
+}
+
+/// One person in the list — a lamp for whether they may sign in, their name and address, their roles, whether
+/// two-step sign-in is on, and when they last signed in.
+[Composable, Part]
+public component PersonListRow(PersonRow p, bool current, Action onOpen, bool columns = true) {
+  variants {
+    base { Display = Display.Flex; Px = 3; Py = 2; Gap = 3; BorderBW = 1; Border = Colors.Border; Cursor = Cursor.Pointer;
+           Bg = Colors.Surface; Transition = Motion.Fast; Hover { Bg = Colors.Muted; } }
+    current { Bg = Colors.Primary.Subtle; Hover { Bg = Colors.Primary.Subtle; } }
+  }
+  render {
+    Pressable(onClick: onOpen, label: p.Name, role: UiRole.ListItem, current: current) {
+      Row(gap: 3, align: Align.Center, w: "100%", minW: "0") {
+        // The avatar carries whether they can sign in: a deactivated account is drawn faded, with its word beside the name.
+        Box(position: Position.Relative, shrink: 0, opacity: p.Active ? "1" : "0.45") {
+          Avatar(PersonInitials(p.Name), size: Size.Sm);
+        }
+        Stack(gap: 0, grow: 1, minW: "0") {
+          Row(gap: 2, align: Align.Center, minW: "0") {
+            Text(p.Name, fontSize: FontSize.Label, fontWeight: FontWeight.Medium,
+                 color: p.Active ? Colors.OnSurface : Colors.TextMuted, whiteSpace: WhiteSpace.Nowrap,
+                 overflow: Overflow.Hidden, textOverflow: TextOverflow.Ellipsis, minW: "0");
+            if (!p.Active) { Badge("Deactivated", tone: Tone.Ghost); }
+          }
+          Text(p.Email + (p.Organizations != "" ? " · " + p.Organizations : ""), fontSize: FontSize.Caption, color: Colors.TextMuted,
+               whiteSpace: WhiteSpace.Nowrap, overflow: Overflow.Hidden, textOverflow: TextOverflow.Ellipsis, minW: "0");
+          // On a phone the columns fold under the name: the roles, and whether two-step is on.
+          if (!columns && (p.Roles != "" || p.SecondFactorOn)) {
+            Row(gap: 1, wrap: Wrapping.Wrap, pt: 1) {
+              foreach (var r in RolesOf(p)) { Badge(r, tone: RoleTone(r)); }
+              if (p.SecondFactorOn) { Badge("Two-step on", tone: Tone.Ghost); }
+            }
+          }
+        }
+        if (columns) {
+          Row(gap: 1, wrap: Wrapping.Wrap, w: "200px", shrink: 0) {
+            foreach (var r in RolesOf(p)) { Badge(r, tone: RoleTone(r)); }
+            if (p.Roles == "") { Text("No role", fontSize: FontSize.Caption, color: Colors.TextMuted); }
+          }
+          Row(gap: 1, align: Align.Center, w: "88px", shrink: 0) {
+            Lamp(lit: p.SecondFactorOn, tone: Tone.Success);
+            Text(p.SecondFactorOn ? "On" : "Off", fontSize: FontSize.Caption, color: p.SecondFactorOn ? Colors.OnSurface : Colors.TextMuted);
+          }
+        }
+        Text(SignedInWhen(p.LastSignIn, DateTime.UtcNow), fontSize: FontSize.Caption,
+             color: p.LastSignIn == null ? Colors.TextMuted : Colors.TextSecondary, w: columns ? "104px" : "auto", shrink: 0,
+             textAlign: TextAlign.Right, fontVariant: FontVariant.TabularNums, whiteSpace: WhiteSpace.Nowrap);
+      }
+    }
+  }
+}
+
+/// A person's roles, one per chip.
+public List<string> RolesOf(PersonRow p) {
+  List<string> roles = [];
+  if (p.Roles == "") { return roles; }
+  foreach (var r in p.Roles.Split(", ")) { roles.Add(r); }
+  return roles;
+}
+
+/// The chip colour for a role: the accent for the role that runs the app, quiet for the rest. Read off the WORD the app
+/// gives its roles, so an app whose top role is "Owner" reads the same.
+public Tone RoleTone(string role) => role == "Admin" || role == "Owner" ? Tone.Primary : Tone.Default;
+
+/// Two letters for an avatar — the first of the first and last names.
+public string PersonInitials(string name) {
+  var parts = name.Trim().Split(" ");
+  if (parts.Length == 0 || parts[0] == "") { return "?"; }
+  var first = parts[0].Substring(0, 1).ToUpper();
+  return parts.Length > 1 && parts[parts.Length - 1] != "" ? first + parts[parts.Length - 1].Substring(0, 1).ToUpper() : first;
+}
+
+/// When somebody last signed in, in words: "Today, 09:12", "Yesterday", "3 days ago", "12 Mar" — and "Never".
+public string SignedInWhen(DateTime? at, DateTime now) {
+  if (at == null) { return "Never"; }
+  var days = (now.Date - at.Value.Date).TotalDays;
+  if (days < 1.0) { return "Today, " + at.Value.ToString("HH:mm"); }
+  if (days < 2.0) { return "Yesterday"; }
+  if (days < 7.0) { return Convert.ToInt(Math.Floor(days)) + " days ago"; }
+  return at.Value.ToString("d MMM");
+}
+
+/// One person in full, for a people manager — and every change to their access, each with its reason.
+[Composable]
+public component PersonPanel(PersonDetail d, Action onChanged, Action onClose) {
+  string problem = "";
+  string done = "";
+  RoleOption? giving = null;
+  string reason = "";
+  string asking = "";
+
+  action Reload() { onChanged(); }
+  action Ask(string what) { asking = what; reason = ""; problem = ""; }
+  action StopAsking() { asking = ""; }
+  action Run(string what) {
+    problem = "";
+    done = "";
+    try {
+      var p = Principal.Single(x => x.Id == d.Id);
+      if (what == "grant" && giving != null && giving.Role != null) { GrantRole(p, giving.Role.Value, reason); done = $"{d.Name} is now {giving.Label}."; giving = null; }
+      if (what == "deactivate") { Deactivate(p, reason); done = $"{d.Name} can no longer sign in, and was signed out everywhere."; }
+      if (what == "reactivate") { Reactivate(p, reason); done = $"{d.Name} can sign in again."; }
+      if (what == "reset") { ResetSecondFactor(p, reason); done = $"Two-step sign-in was reset for {d.Name}; they set it up again when they next sign in."; }
+      if (what == "signout") { SignOutEverywhere(p, reason); done = $"{d.Name} was signed out everywhere."; }
+      asking = "";
+      reason = "";
+      Reload();
+    }
+    catch (Exception ex) { problem = ex.Message; }
+  }
+  action Give(RoleOption c) { giving = c; Run("grant"); }
+  action Revoke(HeldRole r) {
+    problem = "";
+    done = "";
+    try {
+      var p = Principal.Single(x => x.Id == d.Id);
+      if (r.Role != null) { RevokeRole(p, r.Role.Value); done = $"{r.Label} was taken from {d.Name}."; }
+      Reload();
+    }
+    catch (Exception ex) { problem = ex.Message; }
+  }
+
+  render {
+    Stack(gap: 5, p: 5, label: d.Name) {
+      Row(gap: 3, align: Align.Start) {
+        Avatar(PersonInitials(d.Name), size: Size.Lg);
+        Stack(gap: 1, grow: 1, minW: "0") {
+          Text(d.Name, fontSize: FontSize.Heading, fontWeight: FontWeight.Semibold, letterSpacing: "-0.01em");
+          Text(d.Email, color: Colors.TextMuted);
+          Row(gap: 2, wrap: Wrapping.Wrap, pt: 1) {
+            Badge(d.Active ? "Active" : "Deactivated", tone: d.Active ? Tone.Success : Tone.Ghost);
+            Badge(d.Verified ? "Address proven" : "Address not proven", tone: d.Verified ? Tone.Ghost : Tone.Warning);
+            if (d.SecondFactorOn) { Badge("Two-step on", tone: Tone.Ghost); }
+            else if (d.SecondFactorRequired) { Badge("Two-step required, not set up", tone: Tone.Warning); }
+          }
+        }
+        IconButton(label: "Close", onPress: onClose, tone: Tone.Ghost, shortcut: "Escape") { Icon(Icons.Close); }
+      }
+      if (done != "") { Alert(done, tone: Tone.Success); }
+      if (problem != "") { Alert(problem, tone: Tone.Danger); }
+
+      Stack(gap: 2, label: "Roles") {
+        Text("Roles", fontWeight: FontWeight.Semibold);
+        if (d.Roles.Count == 0) { Text("No roles — they can sign in, and do nothing that needs one.", color: Colors.TextMuted, fontSize: FontSize.Caption); }
+        foreach (var r in d.Roles) {
+          Row(gap: 2, align: Align.Center, py: 1) {
+            Text(r.Label, fontWeight: FontWeight.Medium);
+            if (r.Organization != "") { Text("at " + r.Organization, color: Colors.TextMuted, fontSize: FontSize.Caption); }
+            Spacer();
+            if (r.Organization == "") { Button("Remove", onPress: () => Revoke(r), tone: Tone.Ghost, size: Size.Sm); }
+          }
+        }
+        if (d.Grantable.Count > 0) {
+          Row(gap: 2, align: Align.Center, wrap: Wrapping.Wrap, label: "Give a role") {
+            Text("Give a role", fontSize: FontSize.Caption, color: Colors.TextMuted);
+            foreach (var c in d.Grantable) { Button(c.Label, onPress: () => Give(c), size: Size.Sm, tone: Tone.Ghost); }
+          }
+        }
+      }
+
+      Stack(gap: 2, label: "Signing in") {
+        Text("Signing in", fontWeight: FontWeight.Semibold);
+        Text(d.LastSignIn == null ? "Has never signed in." : "Last signed in " + d.LastSignIn.Value.ToString("d MMM yyyy, HH:mm") + ".",
+             fontSize: FontSize.Caption, color: Colors.TextMuted);
+        Text(d.SignedIn == 0 ? "Not signed in anywhere right now." : d.SignedIn == 1 ? "Signed in on 1 browser or device right now." : $"Signed in on {d.SignedIn} browsers or devices right now.",
+             fontSize: FontSize.Caption, color: Colors.TextMuted);
+        Row(gap: 2, wrap: Wrapping.Wrap) {
+          if (d.SignedIn > 0) { Button("Sign out everywhere", onPress: () => Ask("signout"), size: Size.Sm); }
+          if (d.SignsInWithPassword && d.SecondFactorOn) { Button("Reset two-step sign-in", onPress: () => Ask("reset"), size: Size.Sm); }
+          if (d.Active) { Button("Deactivate", onPress: () => Ask("deactivate"), tone: Tone.Danger, size: Size.Sm); }
+          else { Button("Reactivate", onPress: () => Ask("reactivate"), size: Size.Sm); }
+        }
+      }
+
+      Stack(gap: 2, label: "History") {
+        Text("History", fontWeight: FontWeight.Semibold);
+        if (d.History.Count == 0) { Text("No changes to their access yet.", color: Colors.TextMuted, fontSize: FontSize.Caption); }
+        foreach (var e in d.History) {
+          Stack(gap: 0, py: 1, borderBW: 1, border: Colors.Border) {
+            Row(gap: 2, align: Align.Center) {
+              Text(e.What, fontWeight: FontWeight.Medium, grow: 1);
+              Text(e.At.ToString("d MMM HH:mm"), fontFamily: Font.Mono, fontSize: FontSize.Caption, color: Colors.TextMuted);
+            }
+            Text("by " + e.By + (e.Reason != "" ? " — “" + e.Reason + "”" : ""), fontSize: FontSize.Caption, color: Colors.TextMuted);
+          }
+        }
+      }
+    }
+    if (asking != "") {
+      Dialog(asking == "reset" ? "Reset two-step sign-in?" : asking == "deactivate" ? "Deactivate " + d.Name + "?"
+             : asking == "reactivate" ? "Reactivate " + d.Name + "?" : "Sign " + d.Name + " out everywhere?",
+             onDismiss: StopAsking,
+             subtitle: asking == "reset" ? "Their authenticator app and recovery codes stop working; they set it up again at their next sign-in. Do this only when you are sure it is them asking."
+               : asking == "deactivate" ? "They cannot sign in, and every session they have ends. Their work stays theirs."
+               : asking == "reactivate" ? "They can sign in again with the password they had."
+               : "Every session they have ends, on every device. They can sign in again.") {
+        Field(asking == "reset" ? "Why — who asked, and how you knew it was them" : "Why (recorded with the change)", value: reason,
+              placeholder: asking == "reset" ? "Lost phone; confirmed on a call from her desk number" : "");
+        if (problem != "") { Alert(problem, tone: Tone.Danger); }
+        Row(gap: 2, justify: Justify.End) {
+          Button("Cancel", onPress: StopAsking, tone: Tone.Ghost);
+          Button(asking == "reset" ? "Reset" : asking == "deactivate" ? "Deactivate" : asking == "reactivate" ? "Reactivate" : "Sign out everywhere",
+                 onPress: () => Run(asking), tone: asking == "deactivate" ? Tone.Danger : Tone.Primary);
+        }
+      }
+    }
+  }
+}
+
+/// The app-wide trail of who changed whose access, newest first — an auditor's page.
+[Composable]
+public component AccessTrailList(int take = 100) {
+  List<AccessEvent> trail = [];
+  on mount { trail = AccessTrail(take); }
+  render {
+    Stack(gap: 0, role: UiRole.List, label: "Access changes") {
+      if (trail.Count == 0) { EmptyState("No changes yet", body: "Every change to somebody's access is listed here, with who made it and why."); }
+      foreach (var e in trail) {
+        Row(gap: 3, align: Align.Start, py: 2, borderBW: 1, border: Colors.Border, role: UiRole.ListItem, label: e.What) {
+          Text(e.At.ToString("d MMM HH:mm"), fontFamily: Font.Mono, fontSize: FontSize.Caption, color: Colors.TextMuted, w: "96px", shrink: 0);
+          Stack(gap: 0, grow: 1, minW: "0") {
+            Text(e.What);
+            Text("by " + e.By + (e.Reason != "" ? " — “" + e.Reason + "”" : ""), fontSize: FontSize.Caption, color: Colors.TextMuted);
+          }
+        }
+      }
+    }
+  }
+}

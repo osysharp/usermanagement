@@ -1,0 +1,194 @@
+// INTEGRATIONS — a program the app is used BY, under its own name: added by a people manager with a role and a person who
+// answers for it, given API keys, and never able to sign in. (The team is access.test.osy's `Team`: Sam and Ari are
+// admins, Ada an agent, Mo nobody.)
+// SECURITY-INVARIANT(an-integration-never-signs-in) · SECURITY-INVARIANT(api-keys-are-issued-and-revoked-by-people-managers-alone).
+
+using Osysharp.Identity;
+using Osysharp.UserAccounts;
+using Osysharp.UserManagement;
+
+string Caller(string key) {
+  var r = Api.Get("/api/rest/v1/team/me", apiKey: key);
+  return r.StatusCode == 200 ? r.Body : "HTTP " + r.StatusCode;
+}
+
+Integration Zapier() {
+  Integration? found = null;
+  runas (Sam) { found = Integration.Single(i => i.DisplayName == "Zapier"); }
+  return found!;
+}
+
+principal ZapierAccount => Integration.Single(i => i.DisplayName == "Zapier");
+
+// A manager adds an integration and issues it a key: the key acts as the integration — not as the manager — and the
+// trail and the key list name it, as "Zapier", owned by the manager.
+[Test(Team)]
+void an_integration_holds_a_key_and_acts_under_its_own_name() {
+  IssuedApiKey issued = new IssuedApiKey();
+  runas (Sam) {
+    var zapier = AddIntegration("Zapier", AppRole.Agent, reason: "Tickets from the web form");
+    Assert.Equal("Zapier", zapier.DisplayName);
+    Assert.EndsWith("@integrations.invalid", zapier.Email);
+    Assert.Equal("Sam", zapier.Owner.DisplayName);
+    Assert.True(RoleGrant.Any(g => g.Member == zapier && g.Role == AppRole.Agent));
+    issued = IssueApiKey(zapier, "Web form");
+  }
+  var caller = Caller(issued.Key);
+  Assert.Contains("@integrations.invalid", caller);
+  Assert.DoesNotContain("sam@desk.test", caller);
+  runas (Sam) {
+    var line = ApiKeyLines(DateTime.UtcNow)[0];
+    Assert.Equal("Zapier", line.Holder);
+    // The platform still records the key's use on an account nobody may edit.
+    Assert.NotNull(Integration.Single(i => i.DisplayName == "Zapier").ApiKeyUsedAt);
+    Assert.Equal("Last used just now", line.LastUsed);
+    var trail = AccessTrail();
+    Assert.Equal("Issued the API key “Web form” " + line.Ending + " — Zapier", trail[0].What);
+    Assert.Equal("Added the integration “Zapier” as Agent, owned by Sam", trail[1].What);
+    Assert.Equal("Tickets from the web form", trail[1].Reason);
+    var listed = IntegrationLines();
+    Assert.Equal(1, listed.Count);
+    Assert.Equal("Agent", listed[0].Roles);
+    Assert.Equal(1, listed[0].Keys);
+  }
+}
+
+// ⛔ SECURITY-INVARIANT(an-integration-never-signs-in): every sign-in door refuses it — the password, a reset, a code —
+// and it has no password to try.
+[Test(Team)]
+void an_integration_cannot_sign_in_by_any_door() {
+  string address = "";
+  runas (Sam) { address = AddIntegration("Zapier", AppRole.Agent).Email; }
+  Assert.Equal("", SignedIn(address, ""));
+  Assert.Equal("", SignedIn(address, "correct-horse-1"));
+  runas (AuthBootstrap) {
+    Assert.Equal("", RequestPasswordReset(address));
+    Assert.Equal(0, PasswordReset.Count());
+    Assert.Throws(() => VerifyEmailCode(address, "000000"));
+    Assert.Equal(0, User.Count(u => u.Email == address));
+  }
+}
+
+// ⛔ Nobody edits an integration — not a manager, and not the integration itself holding its own key: a renamed one would
+// put another name on everything it has done.
+[Test(Team)]
+void an_integration_cannot_rename_itself() {
+  runas (Sam) { AddIntegration("Zapier", AppRole.Agent); }
+  runas (ZapierAccount) {
+    Assert.Denied(() => {
+      var me = Integration.Single(i => i.DisplayName == "Zapier");
+      me.DisplayName = "Ada";
+      UnitOfWork.Commit();
+    });
+  }
+  runas (Sam) {
+    Assert.Denied(() => {
+      var it = Integration.Single(i => i.DisplayName == "Zapier");
+      it.DisplayName = "Something else";
+      UnitOfWork.Commit();
+    });
+    Assert.Equal(1, Integration.Count(i => i.DisplayName == "Zapier"));
+  }
+}
+
+// ⛔ SECURITY-INVARIANT(api-keys-are-issued-and-revoked-by-people-managers-alone): only a people manager adds an
+// integration or issues it a key — the integration cannot issue itself one either — and only with a role the app offers.
+[Test(Team)]
+void only_a_people_manager_adds_an_integration_and_issues_its_keys() {
+  runas (Ada) { Assert.Denied(() => AddIntegration("Mine", AppRole.Agent)); }
+  runas (Sam) {
+    Assert.Equal("That role is not one this app hands out.",
+                 Assert.Throws<ValidationException>(() => AddIntegration("Mailbox", AppRole.Integration)).Message);
+    AddIntegration("Zapier", AppRole.Agent);
+  }
+  var zapier = Zapier();
+  runas (Ada) { Assert.Denied(() => IssueApiKey(zapier, "Mine")); }
+  runas (ZapierAccount) { Assert.Denied(() => IssueApiKey(zapier, "Mine")); }
+  runas (Sam) { Assert.Equal(0, ApiKey.Count()); }
+}
+
+// Switching an integration off revokes every key it holds, at the next request.
+[Test(Team)]
+void deactivating_an_integration_revokes_its_keys() {
+  IssuedApiKey first = new IssuedApiKey();
+  IssuedApiKey second = new IssuedApiKey();
+  runas (Sam) {
+    var zapier = AddIntegration("Zapier", AppRole.Agent);
+    first = IssueApiKey(zapier, "Web form");
+    second = IssueApiKey(zapier, "Mailbox");
+  }
+  Assert.Contains("@integrations.invalid", Caller(second.Key));
+  runas (Sam) { Deactivate(Zapier(), "We stopped using Zapier"); }
+  Assert.Equal("HTTP 401", Caller(first.Key));
+  Assert.Equal("HTTP 401", Caller(second.Key));
+  runas (Sam) {
+    Assert.Equal(0, ApiKey.Count(k => k.RevokedAt == null));
+    Assert.Equal(0, IntegrationLines().Count);
+    Assert.False(IntegrationLines(withInactive: true)[0].Active);
+  }
+}
+
+// A program is never the app's last admin: an integration holding the role the app must keep does not count.
+[Test(Team)]
+void an_integration_does_not_count_as_the_admin_the_app_must_keep() {
+  runas (Sam) {
+    RevokeRole(Person("ari@desk.test"), AppRole.Admin);
+    AddIntegration("Robot", AppRole.Admin);
+    Assert.Contains("needs at least one active",
+                    Assert.Throws<ValidationException>(() => RevokeRole(Person("sam@desk.test"), AppRole.Admin)).Message);
+  }
+}
+
+// An integration outlives its owner: deactivating the person who answers for it ends THEIR sessions and keys, never the
+// integration's — a program a team depends on does not stop because somebody left.
+[Test(Team)]
+void an_integration_keeps_working_when_its_owner_is_deactivated() {
+  IssuedApiKey issued = new IssuedApiKey();
+  runas (Ari) {
+    var zapier = AddIntegration("Zapier", AppRole.Agent);
+    issued = IssueApiKey(zapier, "Web form");
+  }
+  runas (Sam) { Deactivate(Person("ari@desk.test"), "Left the company"); }
+  Assert.Contains("@integrations.invalid", Caller(issued.Key));
+  runas (Sam) {
+    var line = IntegrationLines()[0];
+    Assert.Equal("Ari", line.Owner);
+    Assert.False(line.OwnerActive);
+    Assert.Equal(1, line.Keys);
+  }
+}
+
+// ⛔ SECURITY-INVARIANT(people-access-changes-are-recorded-and-the-managers-alone): an integration whose owner left is
+// given to somebody who is here by a people manager, as a recorded change to access (who handed it over, to whom, why),
+// and its keys go on working. Nobody else can, the integration itself included, and it is never given to a deactivated
+// account, to another integration, or to the person who already answers for it.
+[Test(Team)]
+void a_people_manager_reassigns_an_integration_whose_owner_left_and_the_trail_records_it() {
+  IssuedApiKey issued = new IssuedApiKey();
+  runas (Ari) {
+    var made = AddIntegration("Zapier", AppRole.Agent);
+    issued = IssueApiKey(made, "Web form");
+  }
+  runas (Sam) { Deactivate(Person("ari@desk.test"), "Left the company"); }
+  var zapier = Zapier();
+  runas (Ada) { Assert.Denied(() => ReassignIntegration(zapier, Person("ada@desk.test"))); }
+  runas (ZapierAccount) { Assert.Denied(() => ReassignIntegration(zapier, Person("mo@desk.test"))); }
+  runas (Sam) {
+    Assert.Equal("That account is deactivated — choose an active person to own the integration.",
+                 Assert.Throws<ValidationException>(() => ReassignIntegration(zapier, Person("ari@desk.test"))).Message);
+    Assert.Equal("An integration is answered for by a person — choose who owns it.",
+                 Assert.Throws<ValidationException>(() => ReassignIntegration(zapier, zapier)).Message);
+    ReassignIntegration(zapier, Person("sam@desk.test"), "Ari left — I look after the web form now");
+    Assert.Equal("Sam already answers for Zapier.",
+                 Assert.Throws<ValidationException>(() => ReassignIntegration(Zapier(), Person("sam@desk.test"))).Message);
+    Assert.Equal("Sam", Integration.Single(i => i.DisplayName == "Zapier").Owner.DisplayName);
+    var line = IntegrationLines()[0];
+    Assert.Equal("Sam", line.Owner);
+    Assert.True(line.OwnerActive);
+    var trail = AccessTrail();
+    Assert.Equal("Gave the integration “Zapier” to Sam", trail[0].What);
+    Assert.Equal("Sam", trail[0].By);
+    Assert.Equal("Ari left — I look after the web form now", trail[0].Reason);
+  }
+  Assert.Contains("@integrations.invalid", Caller(issued.Key));
+}

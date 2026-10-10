@@ -1,0 +1,15 @@
+// The producer's test project for Osysharp.UserManagement — a team app whose admins look after the people: roles, accounts,
+// lost phones, sessions, organisations — each change recorded.
+app PeopleKitTests {
+  model "model/**/*.osy";
+  tests "**/*.test.osy";
+  use Osysharp.Identity@0;
+  use Osysharp.Mail@0;
+  use Osysharp.EmailTemplates@0;
+  use Osysharp.UserAccounts@1;
+  use Osysharp.Organizations@0;
+  use Osysharp.Invitations@0;
+  use Osysharp.UserManagement@0;
+  use Osysharp.Ui;
+}
+

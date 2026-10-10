@@ -1,0 +1,50 @@
+// The settings area: the kit announces its two pages to whoever looks after the people — beside the
+// sections of the other kits this app uses — and to nobody else.
+
+using Osysharp.Identity;
+using Osysharp.UserAccounts;
+using Osysharp.UserManagement;
+
+[TestFixture]
+void Settings() {
+  var lee = new User { Email = "lee@desk.test", DisplayName = "Lee Admin", PasswordHash = Security.HashPassword("correct-horse-1"),
+                       EmailVerifiedAt = DateTime.UtcNow, LastLoginAt = DateTime.UtcNow };
+  new RoleGrant { Member = lee, Role = AppRole.Admin };
+  var kai = new User { Email = "kai@desk.test", DisplayName = "Kai Agent", PasswordHash = Security.HashPassword("correct-horse-2"),
+                       EmailVerifiedAt = DateTime.UtcNow };
+  new RoleGrant { Member = kai, Role = AppRole.Agent };
+}
+
+principal Lee => User.Single(u => u.Email == "lee@desk.test");
+principal Kai => User.Single(u => u.Email == "kai@desk.test");
+
+[Test(Settings)]
+[runas(Lee)]
+void the_kit_announces_its_pages_beside_the_other_kits_sections() {
+  var links = AnnouncedSettings();
+  Assert.Equal("People", links.Single(l => l.To == "/settings/people").Label);
+  Assert.Equal("Access changes", links.Single(l => l.To == "/settings/access").Label);
+  Assert.Equal("API keys", links.Single(l => l.To == "/settings/api-keys").Label);
+  // All three in the team's group. (Organizations is in this app too, but its tiers are the Organizations Accounts
+  // add-on's section, which this app does not use — so no second group.)
+  Assert.Equal("Team", string.Join(", ", links.Select(l => l.Group).Distinct()));
+}
+
+[Test(Settings)]
+[runas(Kai)]
+void nobody_else_is_shown_them() {
+  Assert.Equal(0, AnnouncedSettings().Count);
+}
+
+[Test(Settings)]
+void the_people_page_opens_in_the_settings_frame_and_refuses_anybody_else() {
+  Ui.Viewport(1440, 900);
+  Ui.SignInAs(Lee);
+  Ui.Visit("/settings/people");
+  Assert.Visible("People", within: "Settings sections");
+  Assert.Visible("Kai Agent", within: "Everyone");
+  Ui.SignOut();
+  Ui.SignInAs(Kai);
+  Ui.Visit("/settings/people");
+  Assert.Hidden("Lee Admin");
+}

@@ -1,0 +1,75 @@
+// What the user manager shows — who is here, what each holds, and their history.
+
+using Osysharp.Identity;
+using Osysharp.UserAccounts;
+using Osysharp.UserManagement;
+
+[TestFixture]
+void Directory() {
+  var sam = new User { Email = "sam@desk.test", DisplayName = "Sam Admin", PasswordHash = Security.HashPassword("correct-horse-1"),
+                       EmailVerifiedAt = DateTime.UtcNow };
+  new RoleGrant { Member = sam, Role = AppRole.Admin };
+  var ada = new User { Email = "ada@desk.test", DisplayName = "Ada Agent", PasswordHash = Security.HashPassword("correct-horse-3"),
+                       EmailVerifiedAt = DateTime.UtcNow, TotpSecret = "sealed-secret", SecondFactorOnAt = DateTime.UtcNow };
+  new RoleGrant { Member = ada, Role = AppRole.Agent };
+  new RoleGrant { Member = ada, Role = AppRole.Integration };
+  new User { Email = "tom@desk.test", DisplayName = "Tom", PasswordHash = Security.HashPassword("correct-horse-5"), IsActive = false };
+}
+
+principal Sam => User.Single(u => u.Email == "sam@desk.test");
+principal Ada => User.Single(u => u.Email == "ada@desk.test");
+
+[Test(Directory)]
+void the_list_shows_each_persons_roles_by_the_apps_names_and_whether_two_step_is_on() {
+  runas (Sam) {
+    var rows = PeopleList();
+    Assert.Equal(3, rows.Count);
+    var ada = rows.Single(r => r.Email == "ada@desk.test");
+    // The integration role is not offered, so it is not a name a person reads either.
+    Assert.Equal("Agent", ada.Roles);
+    Assert.True(ada.SecondFactorOn);
+    Assert.True(ada.Verified);
+    var tom = rows.Single(r => r.Email == "tom@desk.test");
+    Assert.False(tom.Active);
+    Assert.False(tom.Verified);
+  }
+}
+
+[Test(Directory)]
+void the_list_searches_names_and_addresses_and_can_leave_out_the_deactivated() {
+  runas (Sam) {
+    Assert.Equal(1, PeopleList("AGENT").Count);
+    Assert.Equal(1, PeopleList("sam@").Count);
+    Assert.Equal(2, PeopleList(includeInactive: false).Count);
+  }
+}
+
+[Test(Directory)]
+void a_persons_detail_offers_only_the_roles_they_do_not_hold_and_shows_their_history() {
+  User? ada = null;
+  runas (Sam) { ada = User.Single(u => u.Email == "ada@desk.test"); }
+  runas (Sam) { GrantRole(ada!, AppRole.Lead, "Night shift lead"); }
+  runas (Sam) {
+    var d = PersonDetailOf(ada!.Id);
+    Assert.Equal("Ada Agent", d.Name);
+    Assert.True(d.SecondFactorOn);
+    Assert.False(d.SecondFactorRequired);
+    Assert.Equal(2, d.Roles.Count);
+    Assert.Equal(1, d.Grantable.Count);
+    Assert.Equal("Admin", d.Grantable[0].Label);
+    Assert.Equal(1, d.History.Count);
+    Assert.Equal("Granted Lead", d.History[0].What);
+    Assert.Equal("Sam Admin", d.History[0].By);
+    Assert.Equal("Night shift lead", d.History[0].Reason);
+    Assert.Equal(1, AccessTrail().Count);
+  }
+}
+
+[Test(Directory)]
+void the_list_is_for_people_managers() {
+  // An agent reads who else is here (the directory), but not the roles anybody else holds.
+  runas (Ada) {
+    var rows = PeopleList();
+    Assert.Equal("", rows.Single(r => r.Email == "sam@desk.test").Roles);
+  }
+}

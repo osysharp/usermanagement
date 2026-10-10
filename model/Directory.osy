@@ -1,0 +1,209 @@
+// What the user manager shows — one row per person, and one person in full. Read as the manager: what they may read of
+// each person, and the app roles they hold (`partial entity RoleGrant`, below).
+
+namespace Osysharp.UserManagement;
+
+using Osysharp.Identity;
+using Osysharp.UserAccounts;
+using Osysharp.Organizations;
+using Osysharp.Invitations;
+
+// ⚠ THE APP GRANTS ITS MANAGERS THE READ OF WHO HOLDS WHICH ROLE — the one thing the user manager needs that
+//   Osysharp.Identity does not grant (each person reads only their own roles there):
+//     partial entity RoleGrant { security { allow read when ManagesPeople; } }
+//   One line, in the app: who reads another kit's records is the app's to say. Reading only: every CHANGE goes through `AccessChange`, so an app that also grants create/delete on RoleGrant opens a
+//   second, unrecorded way to change access.
+
+/// One person, as the people list shows them.
+public class PersonRow {
+  public Guid Id;
+  public string Name = "";
+  public string Email = "";
+  public bool Active = true;
+  /// Their address was proven — a message sent to it was received and acted on.
+  public bool Verified = false;
+  /// Two-step sign-in is on (an authenticator app, or a texted step).
+  public bool SecondFactorOn = false;
+  public DateTime? LastSignIn;
+  /// The app roles they hold, by the names the app gives them, comma-separated.
+  public string Roles = "";
+  /// The organisations they are in, comma-separated.
+  public string Organizations = "";
+}
+
+/// How many people the list shows at most — the first by name; a search narrows it.
+public int PeopleShown() { return 500; }
+
+/// Everybody the directory lists, or those whose name or address contains `search`, by name — with what each holds. The
+/// first `PeopleShown()`; the roles and organisations are read for those people only.
+public List<PersonRow> PeopleList(string search = "", bool includeInactive = true) {
+  var q = search.Trim().ToLower();
+  var listed = App.Setting<PeopleSetup>().Directory.Listed();
+  var people = listed != null
+    ? listed.Where(p => (includeInactive || p.IsActive) && (q == "" || p.Email.ToLower().Contains(q) || p.DisplayName.ToLower().Contains(q)))
+        .OrderBy(x => x.DisplayName).ThenBy(x => x.Email).Take(PeopleShown()).ToList()
+    : Everybody(q, includeInactive);
+  var ids = people.Select(p => p.Id).ToList();
+  var grants = PeopleGrantsOf(ids);
+  var memberships = PeopleMembershipsOf(ids);
+  List<PersonRow> rows = [];
+  foreach (var p in people) {
+    var roles = "";
+    foreach (var g in grants) {
+      if (g.Member.Id != p.Id) { continue; }
+      var label = RoleLabel(g.Role);
+      if (label == "") { continue; }
+      roles = roles == "" ? label : roles + ", " + label;
+    }
+    var orgs = "";
+    foreach (var m in memberships) {
+      if (m.Member.Id != p.Id) { continue; }
+      orgs = orgs == "" ? m.Organization.Name : orgs + ", " + m.Organization.Name;
+    }
+    var on = false;
+    if (p is User u) { on = u.SecondFactorOnAt != null || u.SmsSecondStep; }
+    rows.Add(new PersonRow {
+      Id = p.Id, Name = p.DisplayName != "" ? p.DisplayName : p.Email, Email = p.Email, Active = p.IsActive,
+      Verified = p.EmailVerifiedAt != null, SecondFactorOn = on, LastSignIn = p.LastLoginAt, Roles = roles, Organizations = orgs,
+    });
+  }
+  return rows;
+}
+
+/// Everybody with an account whose name or address contains `q` ("" for all), by name — the first `PeopleShown()`.
+List<Principal> Everybody(string q, bool includeInactive) {
+  if (q == "") {
+    return includeInactive
+      ? Principal.OrderBy(x => x.DisplayName).ThenBy(x => x.Email).Take(PeopleShown()).ToList()
+      : Principal.Where(x => x.IsActive).OrderBy(x => x.DisplayName).ThenBy(x => x.Email).Take(PeopleShown()).ToList();
+  }
+  return includeInactive
+    ? Principal.Where(x => x.Email.ToLower().Contains(q) || x.DisplayName.ToLower().Contains(q))
+        .OrderBy(x => x.DisplayName).ThenBy(x => x.Email).Take(PeopleShown()).ToList()
+    : Principal.Where(x => x.IsActive && (x.Email.ToLower().Contains(q) || x.DisplayName.ToLower().Contains(q)))
+        .OrderBy(x => x.DisplayName).ThenBy(x => x.Email).Take(PeopleShown()).ToList();
+}
+
+/// The app roles the people `ids` hold.
+[SuppressWarning("cost-unbounded-read")]   // the roles of the people the list already took — PeopleShown() at most
+List<RoleGrant> PeopleGrantsOf(List<Guid> ids) {
+  if (ids.Count == 0) { return []; }
+  return RoleGrant.Where(g => ids.Contains(g.Member.Id)).ToList();
+}
+
+/// The organisations the people `ids` are active members of.
+[SuppressWarning("cost-unbounded-read")]   // the memberships of the people the list already took — PeopleShown() at most
+List<Membership> PeopleMembershipsOf(List<Guid> ids) {
+  if (ids.Count == 0) { return []; }
+  return Membership.Where(m => m.IsActive && ids.Contains(m.Member.Id)).Include(m => m.Organization).ToList();
+}
+
+/// A role a person holds, as the detail shows it.
+public class HeldRole {
+  public role? Role = null;
+  public string Label = "";
+  /// The organisation it is held in — "" for an app role.
+  public string Organization = "";
+  public Guid? OrganizationId;
+}
+
+/// One line of a person's access history.
+public class AccessEvent {
+  public DateTime At;
+  public string What = "";
+  public string By = "";
+  public string Reason = "";
+}
+
+/// One person in full — for the user manager's detail.
+public class PersonDetail {
+  public Guid Id;
+  public string Name = "";
+  public string Email = "";
+  public bool Active = true;
+  public bool Verified = false;
+  public bool SecondFactorOn = false;
+  public DateTime? SecondFactorSince;
+  /// Whether the app requires two-step sign-in of them.
+  public bool SecondFactorRequired = false;
+  public bool SignsInWithPassword = false;
+  public DateTime? LastSignIn;
+  /// How many places they are signed in right now (other than the manager's own session).
+  public int SignedIn = 0;
+  public List<HeldRole> Roles = [];
+  /// The offered app roles they do NOT hold — what a manager may grant them.
+  public List<RoleOption> Grantable = [];
+  public List<AccessEvent> History = [];
+}
+
+/// `id` in full, as a people manager reads them.
+[SuppressWarning("cost-unbounded-read")]   // one person's roles, organisation roles and the invitations they accepted
+public PersonDetail PersonDetailOf(Guid id) {
+  var p = Principal.Single(x => x.Id == id);
+  var d = new PersonDetail {
+    Id = p.Id, Name = p.DisplayName != "" ? p.DisplayName : p.Email, Email = p.Email, Active = p.IsActive,
+    Verified = p.EmailVerifiedAt != null, LastSignIn = p.LastLoginAt, SignedIn = Security.SignedInElsewhere(p.Id),
+  };
+  if (p is User u) {
+    d.SecondFactorOn = u.SecondFactorOnAt != null || u.SmsSecondStep;
+    d.SecondFactorSince = u.SecondFactorOnAt;
+    d.SecondFactorRequired = App.Setting<AccountsSetup>().SecondFactor.Required(u);
+    d.SignsInWithPassword = true;
+  }
+  foreach (var g in RoleGrant.Where(x => x.Member == p).ToList()) {
+    var label = RoleLabel(g.Role);
+    if (label != "") { d.Roles.Add(new HeldRole { Role = g.Role, Label = label }); }
+  }
+  foreach (var r in MembershipRole.Where(x => x.Membership.Member == p && x.Membership.IsActive).Include(x => x.Membership.Organization).ToList()) {
+    var label = RoleLabel(r.Role);
+    d.Roles.Add(new HeldRole { Role = r.Role, Label = label != "" ? label : "Member",
+                               Organization = r.Membership.Organization.Name, OrganizationId = r.Membership.Organization.Id });
+  }
+  foreach (var o in OfferedRoles()) {
+    if (o.Role == null) { continue; }
+    var held = false;
+    foreach (var h in d.Roles) { if (h.Organization == "" && h.Role != null && h.Role.Value == o.Role.Value) { held = true; } }
+    if (!held) { d.Grantable.Add(o); }
+  }
+  foreach (var c in AccessChange.Where(x => x.Person == p).Include(x => x.By).OrderByDescending(x => x.At).Take(50).ToList()) {
+    d.History.Add(new AccessEvent { At = c.At, What = Describe(c), By = c.By.DisplayName != "" ? c.By.DisplayName : c.By.Email, Reason = c.Reason });
+  }
+  foreach (var i in Invitation.Where(x => x.AcceptedBy == p).Include(x => x.InvitedBy).ToList()) {
+    d.History.Add(new AccessEvent { At = i.AcceptedAt ?? i.CreatedAt, What = "Joined by an invitation to " + InvitedInto(i)
+      + (i.Role != null && RoleLabel(i.Role.Value) != "" ? " as " + RoleLabel(i.Role.Value) : ""),
+      By = i.InvitedBy.DisplayName, Reason = "" });
+  }
+  d.History = d.History.OrderByDescending(e => e.At).ToList();
+  return d;
+}
+
+/// A change in words — "Granted Admin", "Removed from Acme".
+public string Describe(AccessChange c) {
+  var role = c.Role == null ? "" : RoleLabel(c.Role.Value);
+  var org = c.Organization == null ? "" : c.Organization!.Name;
+  if (c.Kind == AccessChangeKind.RoleGranted) { return "Granted " + role; }
+  if (c.Kind == AccessChangeKind.RoleRevoked) { return "Revoked " + role; }
+  if (c.Kind == AccessChangeKind.OrganizationRoleGranted) { return $"Granted {role} at {org}"; }
+  if (c.Kind == AccessChangeKind.OrganizationRoleRevoked) { return $"Revoked {role} at {org}"; }
+  if (c.Kind == AccessChangeKind.JoinedOrganization) { return "Added to " + org; }
+  if (c.Kind == AccessChangeKind.LeftOrganization) { return "Removed from " + org; }
+  if (c.Kind == AccessChangeKind.ApiKeyIssued && c.Key != null) { return $"Issued the API key “{c.Key!.Name}” {c.Key!.Ending}"; }
+  if (c.Kind == AccessChangeKind.ApiKeyRevoked && c.Key != null) { return $"Revoked the API key “{c.Key!.Name}” {c.Key!.Ending}"; }
+  if (c.Kind == AccessChangeKind.IntegrationAdded) { return $"Added the integration “{c.IntegrationName ?? ""}” as {role}"; }
+  if (c.Kind == AccessChangeKind.IntegrationReassigned) { return $"Became the owner of the integration “{c.IntegrationName ?? ""}”"; }
+  return c.Kind.Label;
+}
+
+/// The changes made to anybody's access, newest first — the app-wide trail.
+public List<AccessEvent> AccessTrail(int take = 100) {
+  List<AccessEvent> all = [];
+  foreach (var c in AccessChange.Include(x => x.By).Include(x => x.Person).OrderByDescending(x => x.At).Take(take).ToList()) {
+    var whom = c.Person.DisplayName != "" ? c.Person.DisplayName : c.Person.Email;
+    // An integration's `Person` is who answers for it, not who it is.
+    var what = c.Kind == AccessChangeKind.IntegrationAdded ? Describe(c) + ", owned by " + whom
+             : c.Kind == AccessChangeKind.IntegrationReassigned ? $"Gave the integration “{c.IntegrationName ?? ""}” to {whom}"
+             : Describe(c) + " — " + whom;
+    all.Add(new AccessEvent { At = c.At, What = what, By = c.By.DisplayName != "" ? c.By.DisplayName : c.By.Email, Reason = c.Reason });
+  }
+  return all;
+}

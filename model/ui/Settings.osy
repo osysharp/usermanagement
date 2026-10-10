@@ -1,0 +1,47 @@
+// The UserManagement kit's part of the app's settings area: it ANNOUNCES its two sections — the people and the
+// trail of who changed whose access — and serves their pages in the area's frame (`SettingsFrame`, which the app takes
+// over to put its own shell around it). Nothing to wire: `SettingsArea()` finds this provider by itself.
+//
+// ⚑ AN APP TAKES A PAGE OVER BY NAME — a component `PeopleSettings` or `AccessSettings` of its own replaces the kit's
+//   (with a `[Route]`, served there instead; without one, not served at all).
+
+namespace Osysharp.UserManagement;
+
+using Osysharp.Invitations;
+using Osysharp.Ui;
+
+/// The UserManagement kit's settings sections, shown to the people who look after the app's people.
+public class PeopleSettingsSections : ISettingsProvider {
+  public SettingsLink[] Sections() {
+    return [
+      new SettingsLink { Label = "People", To = "/settings/people", Group = "Team", Icon = Icons.Users, Order = 10,
+                         Shown = ManagesPeople, Hint = "Who is in the app, their roles, two-step sign-in, invitations." },
+      new SettingsLink { Label = "Access changes", To = "/settings/access", Group = "Team", Icon = Icons.History, Order = 11,
+                         Shown = ManagesPeople, Hint = "Every change to somebody's access, who made it and why." },
+      new SettingsLink { Label = "API keys", To = "/settings/api-keys", Group = "Team", Icon = Icons.Lock, Order = 12,
+                         Shown = ManagesPeople, Hint = "Keys that let a program call the app's API as somebody on the team." },
+    ];
+  }
+}
+
+/// The API keys — issuing one, revoking one — as a settings page.
+[Route("/settings/api-keys")] [Layout(SettingsFrame)] [Authorize(ManagesPeople)] [Render(CSR)] [Title("API keys")]
+public component ApiKeysSettings() {
+  render { ApiKeyManager(); }
+}
+
+/// The people, and the changes a person who looks after them makes — the user manager, as a settings page.
+[Route("/settings/people")] [Layout(SettingsFrame)] [Authorize(ManagesPeople)] [Render(CSR)] [Title("People")]
+public component PeopleSettings() {
+  render { PeopleManager(canInvite: MayInvite); }
+}
+
+/// Every change to somebody's access, newest first — an auditor's page.
+[Route("/settings/access")] [Layout(SettingsFrame)] [Authorize(ManagesPeople)] [Render(CSR)] [Title("Access changes")]
+public component AccessSettings() {
+  render {
+    SettingsPage("Access changes", description: "Every change to somebody's access — a role, an account switched off, a lost phone, a sign-out — with who made it and why. Nobody edits or deletes these.") {
+      AccessTrailList();
+    }
+  }
+}

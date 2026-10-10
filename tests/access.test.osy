@@ -1,0 +1,220 @@
+// Changing somebody's access: only a people manager, only by a record of who, what and why — never edited, never
+// deleted — and never in a way that locks the app out of itself.
+// SECURITY-INVARIANT(people-access-changes-are-recorded-and-the-managers-alone).
+
+using Osysharp.Identity;
+using Osysharp.UserAccounts;
+using Osysharp.Organizations;
+using Osysharp.UserManagement;
+using Osysharp.Mail;
+
+[TestFixture]
+void Team() {
+  var sam = new User { Email = "sam@desk.test", DisplayName = "Sam", PasswordHash = Security.HashPassword("correct-horse-1"),
+                       EmailVerifiedAt = DateTime.UtcNow };
+  new RoleGrant { Member = sam, Role = AppRole.Admin };
+  var ari = new User { Email = "ari@desk.test", DisplayName = "Ari", PasswordHash = Security.HashPassword("correct-horse-2"),
+                       EmailVerifiedAt = DateTime.UtcNow };
+  new RoleGrant { Member = ari, Role = AppRole.Admin };
+  // Ada is an agent with two-step sign-in on.
+  var ada = new User { Email = "ada@desk.test", DisplayName = "Ada", PasswordHash = Security.HashPassword("correct-horse-3"),
+                       EmailVerifiedAt = DateTime.UtcNow, TotpSecret = "sealed-secret", SecondFactorOnAt = DateTime.UtcNow };
+  new RoleGrant { Member = ada, Role = AppRole.Agent };
+  new User { Email = "mo@desk.test", DisplayName = "Mo", PasswordHash = Security.HashPassword("correct-horse-4"),
+             EmailVerifiedAt = DateTime.UtcNow };
+  new Team { Name = "Billing" };
+}
+
+principal Sam => User.Single(u => u.Email == "sam@desk.test");
+principal Ari => User.Single(u => u.Email == "ari@desk.test");
+principal Ada => User.Single(u => u.Email == "ada@desk.test");
+principal Mo => User.Single(u => u.Email == "mo@desk.test");
+
+/// A real ticket for `email`, from the kit's own sign-in — "" when refused.
+string SignedIn(string email, string password) {
+  string ticket = "";
+  runas (AuthBootstrap) { ticket = SignIn(email, password).Ticket; }
+  return ticket;
+}
+
+User Person(string email) {
+  User? found = null;
+  runas (Sam) { found = User.Single(u => u.Email == email); }
+  return found!;
+}
+
+[Test(Team)]
+void a_manager_grants_and_revokes_an_offered_role_and_each_change_is_recorded() {
+  var mo = Person("mo@desk.test");
+  runas (Sam) { GrantRole(mo, AppRole.Lead, "Covering the queue in December"); }
+  runas (Mo) { Assert.True(RoleGrant.Any(g => g.Member == Mo && g.Role == AppRole.Lead)); }
+  runas (Sam) { RevokeRole(mo, AppRole.Lead); }
+  runas (Mo) { Assert.False(RoleGrant.Any(g => g.Member == Mo && g.Role == AppRole.Lead)); }
+  runas (Sam) {
+    var trail = AccessChange.Where(c => c.Person == mo).OrderBy(c => c.At).ToList();
+    Assert.Equal(2, trail.Count);
+    Assert.Equal(AccessChangeKind.RoleGranted, trail[0].Kind);
+    Assert.Equal("sam@desk.test", trail[0].By.Email);
+    Assert.Equal("Covering the queue in December", trail[0].Reason);
+    Assert.Equal(AccessChangeKind.RoleRevoked, trail[1].Kind);
+  }
+}
+
+// The race two managers can run — both give the same person the same role at once — reaches the apply with the grant
+// already there. It is not a refusal: the person holds the role, which is what was asked, so the change is recorded and
+// the one grant stays one (the apply's upsert leaves an existing grant as it is).
+[Test(Team)]
+void giving_a_role_already_held_records_the_change_and_keeps_one_grant() {
+  var mo = Person("mo@desk.test");
+  runas (Sam) { GrantRole(mo, AppRole.Lead, "first"); }
+  runas (Sam) { GrantRole(mo, AppRole.Lead, "again"); }
+  runas (Mo) { Assert.Equal(1, RoleGrant.Count(g => g.Member == Mo && g.Role == AppRole.Lead)); }
+  runas (Sam) {
+    Assert.Equal(2, AccessChange.Count(c => c.Person == mo && c.Kind == AccessChangeKind.RoleGranted && c.State == AccessChangeState.Applied));
+  }
+}
+
+[Test(Team)]
+void a_role_the_app_does_not_offer_is_never_handed_out() {
+  var mo = Person("mo@desk.test");
+  runas (Sam) { Assert.Throws(() => GrantRole(mo, AppRole.Integration)); }
+  runas (Sam) { Assert.Throws(() => GrantRole(mo, AppRole.Authenticator)); }
+  // The sign-in flow's role is refused by the record's floor too, however the record is made.
+  runas (Sam) {
+    Assert.Denied(() => new AccessChange { Person = mo, By = Sam, Kind = AccessChangeKind.RoleGranted, Role = AppRole.Authenticator });
+  }
+  // A record made without the functions' checks is checked by its run: refused, with the reason, and nothing changes.
+  runas (Sam) {
+    new AccessChange { Person = mo, By = Sam, Kind = AccessChangeKind.RoleGranted, Role = AppRole.Integration };
+    UnitOfWork.Commit();
+  }
+  runas (Sam) {
+    var refused = AccessChange.Single(c => c.Person == mo);
+    Assert.Equal(AccessChangeState.Refused, refused.State);
+    Assert.Equal("That role is not one this app hands out.", refused.Refusal);
+  }
+  runas (Mo) { Assert.False(RoleGrant.Any(g => g.Member == Mo)); }
+}
+
+[Test(Team)]
+void somebody_who_does_not_manage_people_changes_nobodys_access() {
+  var mo = Person("mo@desk.test");
+  runas (Ada) { Assert.Denied(() => GrantRole(mo, AppRole.Admin)); }
+  runas (Ada) { Assert.Denied(() => Deactivate(mo)); }
+  runas (Ada) { Assert.Denied(() => GrantRole(Ada, AppRole.Admin)); }
+  runas (Mo) { Assert.False(RoleGrant.Any(g => g.Member == Mo)); }
+}
+
+[Test(Team)]
+void a_change_names_who_made_it_and_is_never_edited_or_deleted() {
+  var mo = Person("mo@desk.test");
+  var ari = Person("ari@desk.test");
+  runas (Sam) { Assert.Denied(() => new AccessChange { Person = mo, By = ari, Kind = AccessChangeKind.RoleGranted, Role = AppRole.Agent }); }
+  runas (Sam) { GrantRole(mo, AppRole.Agent, "first week"); }
+  runas (Sam) {
+    var change = AccessChange.Single(c => c.Person == mo);
+    Assert.Denied(() => { change.Reason = "nothing to see"; });
+  }
+  runas (Sam) {
+    var change = AccessChange.Single(c => c.Person == mo);
+    Assert.Denied(() => change.Delete());
+  }
+}
+
+[Test(Team)]
+void deactivating_stops_sign_in_and_signs_the_person_out_everywhere_saying_why() {
+  var ticket = SignedIn("mo@desk.test", "correct-horse-4");
+  Assert.Equal(200, Api.Get("/account", bearer: ticket).StatusCode);
+  var mo = Person("mo@desk.test");
+  runas (Sam) { Deactivate(mo, "Left the company"); }
+  var refused = Api.Get("/account", bearer: ticket);
+  Assert.Equal(401, refused.StatusCode);
+  Assert.Contains("looks after this app's people changed this account's access", refused.Body);
+  Assert.Equal("", SignedIn("mo@desk.test", "correct-horse-4"));
+  runas (Sam) { Reactivate(mo, "Came back"); }
+  Assert.NotEqual("", SignedIn("mo@desk.test", "correct-horse-4"));
+}
+
+[Test(Team)]
+void a_manager_never_deactivates_themself() {
+  var sam = Person("sam@desk.test");
+  runas (Sam) { Assert.Throws(() => Deactivate(sam)); }
+  runas (Sam) { Assert.True(User.Single(u => u.Email == "sam@desk.test").IsActive); }
+}
+
+[Test(Team)]
+void the_app_is_never_left_without_an_active_admin() {
+  var sam = Person("sam@desk.test");
+  var ari = Person("ari@desk.test");
+  runas (Sam) { RevokeRole(ari, AppRole.Admin, "Moved to engineering"); }
+  // Sam is now the only admin: neither revoking it from them nor deactivating them is allowed.
+  runas (Sam) { Assert.Throws(() => RevokeRole(sam, AppRole.Admin)); }
+  runas (Sam) { Assert.True(RoleGrant.Any(g => g.Member == Sam && g.Role == AppRole.Admin)); }
+}
+
+[Test(Team)]
+void resetting_a_lost_second_factor_needs_a_reason_clears_it_signs_out_and_tells_the_person() {
+  var ticket = "";
+  runas (AuthBootstrap) {
+    // Two-step sign-in is on: the password alone answers a challenge, not a ticket.
+    var step = SignIn("ada@desk.test", "correct-horse-3");
+    Assert.Equal("", step.Ticket);
+    Assert.NotEqual("", step.Challenge);
+  }
+  var ada = Person("ada@desk.test");
+  runas (Sam) { Assert.Throws(() => ResetSecondFactor(ada, "  ")); }
+  runas (Sam) { ResetSecondFactor(ada, "Lost her phone; confirmed on a call from her desk number"); }
+  runas (Sam) {
+    var after = User.Single(u => u.Email == "ada@desk.test");
+    Assert.Null(after.SecondFactorOnAt);
+    Assert.Equal("Lost her phone; confirmed on a call from her desk number",
+                 AccessChange.Single(c => c.Person == after && c.Kind == AccessChangeKind.SecondFactorReset).Reason);
+  }
+  // She signs in with her password now — and sets it up again from her account page.
+  Assert.NotEqual("", SignedIn("ada@desk.test", "correct-horse-3"));
+  runas (AuthBootstrap) {
+    Assert.True(OutgoingMail.Any(m => m.To == "ada@desk.test" && m.Subject.Contains("two-step sign-in") && m.Subject.Contains("reset")));
+  }
+}
+
+[Test(Team)]
+void signing_somebody_out_everywhere_ends_every_session_they_have() {
+  var laptop = SignedIn("mo@desk.test", "correct-horse-4");
+  var phone = SignedIn("mo@desk.test", "correct-horse-4");
+  var mo = Person("mo@desk.test");
+  runas (Sam) { Assert.Equal(2, Security.SignedInElsewhere(mo.Id)); }
+  runas (Sam) { SignOutEverywhere(mo, "Laptop stolen"); }
+  Assert.Equal(401, Api.Get("/account", bearer: laptop).StatusCode);
+  Assert.Equal(401, Api.Get("/account", bearer: phone).StatusCode);
+  runas (Sam) { Assert.Equal(0, Security.SignedInElsewhere(mo.Id)); }
+}
+
+[Test(Team)]
+void a_person_sees_what_was_done_to_their_own_access_and_nobody_elses() {
+  var mo = Person("mo@desk.test");
+  var ada = Person("ada@desk.test");
+  runas (Sam) { GrantRole(mo, AppRole.Agent); }
+  runas (Sam) { GrantRole(ada, AppRole.Lead); }
+  runas (Mo) {
+    Assert.Equal(1, AccessChange.Count());
+    Assert.True(AccessChange.All(c => c.Person == Mo));
+  }
+}
+
+[Test(Team)]
+void organisation_access_is_changed_and_recorded_the_same_way() {
+  var mo = Person("mo@desk.test");
+  Team? billing = null;
+  runas (Sam) { billing = Team.Single(t => t.Name == "Billing"); }
+  runas (Sam) { AddToOrganization(billing!, mo); }
+  runas (Sam) { GrantInOrganization(billing!, mo, AppRole.Lead); }
+  runas (Sam) {
+    Assert.True(HoldsIn(mo, billing!, AppRole.Lead));
+    Assert.False(RoleGrant.Any(g => g.Member == mo && g.Role == AppRole.Lead));
+    Assert.Equal(2, AccessChange.Count(c => c.Person == mo));
+  }
+  runas (Sam) { RemoveFromOrganization(billing!, mo); }
+  runas (Sam) { Assert.False(Membership.Any(m => m.Member == mo)); }
+  // A team Ada cannot read is refused before the call runs — as not found, which says nothing about whether it exists.
+  runas (Ada) { Assert.Throws<NotFoundException>(() => AddToOrganization(billing!, Ada)); }
+}

@@ -1,0 +1,84 @@
+// API KEYS — a people manager issues a key to a teammate; it is shown once, acts as that teammate and nobody else, and
+// a revoked key — or every key of a deactivated account — is refused from the next request on. Each issue and revoke is
+// an access change on the trail. (The team is access.test.osy's `Team`: Sam and Ari are admins, Ada an agent, Mo nobody.)
+// SECURITY-INVARIANT(api-keys-are-issued-and-revoked-by-people-managers-alone).
+
+using Osysharp.Identity;
+using Osysharp.UserAccounts;
+using Osysharp.UserManagement;
+
+string Me(string key) {
+  var r = Api.Get("/api/rest/v1/team/me", apiKey: key);
+  return r.StatusCode == 200 ? r.Body : "HTTP " + r.StatusCode;
+}
+
+[Test(Team)]
+void a_key_acts_as_the_person_it_was_issued_to_and_a_revoked_key_is_refused_at_once() {
+  var ada = Person("ada@desk.test");
+  IssuedApiKey issued = new IssuedApiKey();
+  runas (Sam) { issued = IssueApiKey(ada, "Nightly export"); }
+  Assert.StartsWith("pk_", issued.Key);
+  // The key is Ada — not Sam, who issued it.
+  Assert.Contains("ada@desk.test", Me(issued.Key));
+  Assert.DoesNotContain("sam@desk.test", Me(issued.Key));
+  runas (Sam) {
+    var k = ApiKey.Single(x => x.Id == issued.Id);
+    Assert.Equal(1, k.Slot);
+    Assert.Equal("…" + issued.Key.Substring(issued.Key.Length - 4), k.Ending);
+    // Its use is recorded, to the minute.
+    Assert.NotNull(User.Single(u => u.Email == "ada@desk.test").ApiKeyUsedAt);
+    RevokeApiKey(k, "Export moved to the warehouse");
+  }
+  // Refused at the very next request.
+  Assert.Equal("HTTP 401", Me(issued.Key));
+  runas (Sam) {
+    var trail = AccessChange.Where(c => c.Person == ada).OrderBy(c => c.At).ToList();
+    Assert.Equal(AccessChangeKind.ApiKeyIssued, trail[0].Kind);
+    Assert.Equal(AccessChangeKind.ApiKeyRevoked, trail[1].Kind);
+    Assert.Equal("Export moved to the warehouse", trail[1].Reason);
+    Assert.Contains("Revoked the API key “Nightly export”", AccessTrail()[0].What);
+  }
+}
+
+[Test(Team)]
+void only_a_people_manager_issues_a_key_and_nobody_reads_one_back() {
+  var ada = Person("ada@desk.test");
+  runas (Ada) { Assert.Denied(() => IssueApiKey(ada, "My own")); }
+  IssuedApiKey issued = new IssuedApiKey();
+  runas (Sam) { issued = IssueApiKey(ada, "Zapier"); }
+  // Nobody reads the hash back — not the manager, not the holder.
+  runas (Sam) { Assert.Null(ApiKey.Single(k => k.Id == issued.Id).PendingHash); }
+  runas (Ada) {
+    Assert.Equal(1, ApiKey.Count());
+    Assert.Null(User.Single(u => u.Email == "ada@desk.test").ApiKeyHash);
+    // …and the holder cannot take the key off, or put another on, by writing their own account.
+    Assert.Denied(() => {
+      var me = User.Single(u => u.Email == "ada@desk.test");
+      me.ApiKeyHash = null;
+      UnitOfWork.Commit();
+    });
+  }
+  Assert.Contains("ada@desk.test", Me(issued.Key));
+}
+
+[Test(Team)]
+void two_keys_at_most_and_deactivating_a_person_revokes_theirs() {
+  var ada = Person("ada@desk.test");
+  IssuedApiKey first = new IssuedApiKey();
+  IssuedApiKey second = new IssuedApiKey();
+  runas (Sam) {
+    first = IssueApiKey(ada, "Export");
+    second = IssueApiKey(ada, "Zapier");
+    Assert.Equal("This account already holds two keys — revoke one before issuing another.",
+                 Assert.Throws<ValidationException>(() => IssueApiKey(ada, "Third")).Message);
+  }
+  Assert.Contains("ada@desk.test", Me(second.Key));
+  runas (Sam) { Deactivate(ada, "Left the company"); }
+  Assert.Equal("HTTP 401", Me(first.Key));
+  Assert.Equal("HTTP 401", Me(second.Key));
+  runas (Sam) {
+    Assert.Equal(0, ApiKey.Count(k => k.RevokedAt == null));
+    Assert.Equal("This account is deactivated — reactivate it before issuing it a key.",
+                 Assert.Throws<ValidationException>(() => IssueApiKey(ada, "Again")).Message);
+  }
+}

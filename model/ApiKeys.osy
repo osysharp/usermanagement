@@ -1,0 +1,202 @@
+namespace Osysharp.UserManagement;
+
+using Osysharp.Identity;
+
+// API KEYS — how a program (a teammate's script, an integration tool) calls the app's API as somebody. A people manager
+// issues one to a person; the key is shown ONCE, to the manager who issued it, and only its hash is kept — on the
+// person's account, in one of its two key slots (`Principal.ApiKeyHash` / `ApiKeyHash2`, so a key can be replaced with
+// no moment when neither works). Every request that presents it acts as that person and nobody else, under the app's
+// own rules. A manager revokes it, and the next request that presents it is refused.
+//
+// ⚑ A KEY IS AN ACCESS CHANGE. Issuing and revoking one are recorded as `AccessChange`s — who, to whom, when, why — and
+//   applied by their run in the same commit, as every other change to somebody's access is. Deactivating a person
+//   revokes every key they hold.
+
+/// One API key a people manager issued — whose it is, what it is for, who issued it and when, how it ends, and whether
+/// it is still in use. The key itself is never kept; its hash is on the holder's account while it is valid.
+///
+/// SECURITY-INVARIANT(api-keys-are-issued-and-revoked-by-people-managers-alone): a key is put on an account, and taken
+/// off one, ONLY by the run of an `AccessChange` a people manager (`ManagesPeople`) recorded in their own name — never
+/// by the holder or anybody else, and never readable afterwards (only its hash is kept, and nobody reads it). A key
+/// acts as its holder and nobody else; a revoked key — and every key of a deactivated account — is refused from the
+/// next request on. Guarded by tests/api-keys.test.osy.
+public entity ApiKey {
+  /// Whose key it is — every request that presents it acts as them.
+  [Required] Principal Holder;
+  /// What it is for, in the issuer's words — "Zapier", "Nightly export".
+  [Required, MaxLength(100)] string Name;
+  [Required] Principal IssuedBy;
+  DateTime IssuedAt = DateTime.UtcNow;
+  /// The key's last four characters — enough to match it by eye, too few to use.
+  [MaxLength(10)] string Ending = "";
+  /// Which of the holder's two key slots holds it — 1 or 2; 0 until its access change is applied.
+  int Slot = 0;
+  /// The key's hash, from the moment it is issued until its run puts it on the account; then null. Nobody reads it.
+  [MaxLength(255)] string? PendingHash;
+  DateTime? RevokedAt;
+  Principal? RevokedBy;
+
+  security {
+    // The managers read every key; a person reads the keys they hold.
+    allow read when ManagesPeople || IsAuthenticated where Holder == user;
+    allow read when ManagesPeople;
+    // A manager issues a key — in their own name. Nobody edits or deletes one: its run writes it.
+    allow create when ManagesPeople;
+    deny create where IssuedBy != user;
+    deny read PendingHash;
+  }
+}
+
+/// What issuing a key answers — the key, shown ONCE, and the record of it.
+public class IssuedApiKey {
+  public Guid Id;
+  /// The key itself — `pk_…`. Give it to the program now: it is never shown again.
+  public string Key = "";
+}
+
+/// Issue `person` a new API key named `name` (what it is for). Answers the key — shown ONCE — and its record. Refused when
+/// the person is deactivated, or already holds two keys (revoke one first). Committed.
+public IssuedApiKey IssueApiKey(Principal person, string name, string reason = "") {
+  var me = Session.CurrentUser;
+  if (me == null) { throw new NotAuthorized("Sign in to issue an API key."); }
+  var shown = name.Trim();
+  if (shown == "") { throw new ValidationException("Say what the key is for — it is how you will recognise it in the list."); }
+  if (shown.Length > 100) { shown = shown.Substring(0, 100); }
+  if (!person.IsActive) { throw new ValidationException("This account is deactivated — reactivate it before issuing it a key."); }
+  if (ApiKey.Count(k => k.Holder == person && k.Slot > 0 && k.RevokedAt == null) >= 2) {
+    throw new ValidationException("This account already holds two keys — revoke one before issuing another.");
+  }
+  var key = Security.NewApiKey();
+  var made = new ApiKey { Holder = person, Name = shown, IssuedBy = me!, IssuedAt = DateTime.UtcNow,
+                          Ending = "…" + key.Substring(key.Length - 4), PendingHash = Security.HashApiKey(key) };
+  var change = RecordKeyChange(person, AccessChangeKind.ApiKeyIssued, made, reason);
+  // The run puts the hash on the account in the same commit — or refuses (a key this page never issued fills both slots),
+  // in which case the key it would have been is worthless and is not handed out.
+  ThrowIfRefused(change.Id, "The key was not issued.");
+  return new IssuedApiKey { Id = made.Id, Key = key };
+}
+
+/// Revoke `key` — the next request that presents it is refused. Committed.
+public AccessChange RevokeApiKey(ApiKey key, string reason = "") {
+  var change = RecordKeyChange(key.Holder, AccessChangeKind.ApiKeyRevoked, key, reason);
+  ThrowIfRefused(change.Id, "The key was not revoked.");
+  return change;
+}
+
+/// The change as its run left it — refused, and why, is said to the person who asked.
+void ThrowIfRefused(Guid changeId, string otherwise) {
+  var applied = AccessChange.Single(c => c.Id == changeId);
+  if (applied.State == AccessChangeState.Refused) { throw new ValidationException(applied.Refusal ?? otherwise); }
+}
+
+AccessChange RecordKeyChange(Principal person, AccessChangeKind kind, ApiKey key, string reason) {
+  var me = Session.CurrentUser!;
+  var problem = AccessProblem(person, me, kind, null, null, reason);
+  if (problem != "") { throw new ValidationException(problem); }
+  var made = new AccessChange { Person = person, By = me, Kind = kind, Key = key, Reason = reason.Trim(), At = DateTime.UtcNow };
+  UnitOfWork.Commit();
+  return made;
+}
+
+/// "" when a key change can be applied, else why not — a key to issue is the person's and they may sign in; a key to
+/// revoke is still valid. Asked by the run, which reads the account as the system.
+string ApiKeyProblem(AccessChange change) {
+  var k = change.Key;
+  if (k == null) { return "Say which key."; }
+  if (k!.Holder.Id != change.Person.Id) { return "That key is somebody else's."; }
+  if (change.Kind == AccessChangeKind.ApiKeyIssued) {
+    if (!change.Person.IsActive) { return "This account is deactivated — reactivate it before issuing it a key."; }
+    if (k!.Slot != 0 || k!.PendingHash == null) { return "That key was already issued."; }
+    if (change.Person.ApiKeyHash != null && change.Person.ApiKeyHash2 != null) {
+      return "This account already holds two keys — revoke one before issuing another.";
+    }
+    return "";
+  }
+  if (k!.RevokedAt != null || k!.Slot == 0) { return "That key is not in use."; }
+  return "";
+}
+
+/// Put an issued key's hash on its holder's account (as the system — the run), in the first free slot.
+void ApplyKeyIssued(AccessChange change) {
+  var k = change.Key!;
+  var p = change.Person;
+  if (p.ApiKeyHash == null) { p.ApiKeyHash = k.PendingHash; p.ApiKeyUsedAt = null; k.Slot = 1; }
+  else { p.ApiKeyHash2 = k.PendingHash; p.ApiKey2UsedAt = null; k.Slot = 2; }
+  k.PendingHash = null;
+}
+
+/// Take a key off its holder's account — its slot emptied — and record who revoked it, when.
+void TakeKeyOff(ApiKey k, Principal by) {
+  var p = k.Holder;
+  if (k.Slot == 1) { p.ApiKeyHash = null; }
+  if (k.Slot == 2) { p.ApiKeyHash2 = null; }
+  k.RevokedAt = DateTime.UtcNow;
+  k.RevokedBy = by;
+}
+
+/// Every key `person` holds, taken off — what deactivating an account does, so a key cannot outlive the person's access.
+[SuppressWarning("cost-unbounded-read")]   // one person's live keys
+void TakeEveryKeyOff(Principal person, Principal by) {
+  foreach (var k in ApiKey.Where(x => x.Holder == person && x.RevokedAt == null && x.Slot > 0).ToList()) { TakeKeyOff(k, by); }
+  // A key minted outside this kit (`osyrin app user apikey generate`) has no record, and goes too.
+  person.ApiKeyHash = null;
+  person.ApiKeyHash2 = null;
+}
+
+// ── what the page shows ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/// One key as the page lists it.
+public class ApiKeyLine {
+  public Guid Id;
+  public string Name = "";
+  public string Holder = "";
+  public string Ending = "";
+  public string Issued = "";
+  public string LastUsed = "";
+  public bool Revoked;
+  public string RevokedWords = "";
+}
+
+/// The keys, newest first: those in use, then (when `withRevoked`) those revoked. `now` words the times.
+public List<ApiKeyLine> ApiKeyLines(DateTime now, bool withRevoked = false) {
+  List<ApiKeyLine> lines = [];
+  var keys = ApiKey.Where(k => k.Slot > 0 && (withRevoked || k.RevokedAt == null))
+                   .OrderByDescending(k => k.IssuedAt).Take(200).ToList();
+  foreach (var k in keys) {
+    var used = k.Slot == 1 ? k.Holder.ApiKeyUsedAt : k.Holder.ApiKey2UsedAt;
+    lines.Add(new ApiKeyLine {
+      Id = k.Id, Name = k.Name, Holder = NameOf(k.Holder), Ending = k.Ending,
+      Issued = $"Issued by {NameOf(k.IssuedBy)} · {k.IssuedAt:d MMM yyyy}",
+      LastUsed = k.RevokedAt != null ? "" : used == null ? "Never used" : "Last used " + Ago(used.Value, now),
+      Revoked = k.RevokedAt != null,
+      RevokedWords = k.RevokedAt == null ? "" : $"Revoked {k.RevokedAt:d MMM yyyy}" + (k.RevokedBy != null ? " by " + NameOf(k.RevokedBy!) : ""),
+    });
+  }
+  return lines;
+}
+
+/// Who a key can be issued to — the people list's active people and the active integrations, by name.
+public List<Principal> KeyHolders() {
+  var listed = App.Setting<PeopleSetup>().Directory.Listed();
+  var people = listed != null
+    ? listed.Where(p => p.IsActive).OrderBy(p => p.DisplayName).Take(PeopleShown()).ToList()
+    : Everybody("", false);
+  var ids = people.Select(p => p.Id).ToList();
+  // The integrations as well, whoever the directory lists — a program is not a person on the list, and takes keys.
+  foreach (var i in Integration.Where(x => x.IsActive && !ids.Contains(x.Id)).OrderBy(x => x.DisplayName).Take(PeopleShown()).ToList()) {
+    people.Add(i);
+  }
+  return people.OrderBy(p => p.DisplayName).ToList();
+}
+
+string NameOf(Principal p) { return p.DisplayName != "" ? p.DisplayName : p.Email; }
+
+/// "just now", "4 min ago", "3 h ago", "2 days ago", "12 Mar".
+string Ago(DateTime at, DateTime now) {
+  var span = now - at;
+  if (span.TotalMinutes < 1) { return "just now"; }
+  if (span.TotalMinutes < 60) { return (int)Math.Floor(span.TotalMinutes) + " min ago"; }
+  if (span.TotalHours < 24) { return (int)Math.Floor(span.TotalHours) + " h ago"; }
+  if (span.TotalDays < 14) { var d = (int)Math.Floor(span.TotalDays); return d == 1 ? "yesterday" : d + " days ago"; }
+  return at.ToString("d MMM");
+}

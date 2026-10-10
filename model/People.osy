@@ -1,0 +1,275 @@
+namespace Osysharp.UserManagement;
+
+using Osysharp.Identity;
+using Osysharp.UserAccounts;
+using Osysharp.Organizations;
+using Osysharp.Workflow;
+
+// ── who looks after the people — the app's to say ────────────────────────────────────────────────────────────────────
+
+/// Who grants and revokes roles, deactivates accounts, resets a lost second factor and signs people out. Only the app
+/// knows, so the app DEFINES it (a missing definition is a compile error naming it):
+///   `policy ManagesPeople => RoleGrant.Any(g => g.Member == user && g.Role == AppRole.Admin);`
+/// need: managers give staff their roles and take them back — a staff roles screen, who can do what, user management
+/// need: deactivate an employee who left, reset a team member's two-step sign-in, sign a person out everywhere
+//  ⚑ Need lines are what `osy kits find` ranks by. Run 8 built a gym app with three staff roles and no screen to grant
+//    them: "roles gate the pages" was in its plan, "managers give staff their roles" was not, and this kit's summary
+//    said "user manager" — words its search never typed.
+policy ManagesPeople;
+
+/// How the user manager behaves in this app — `app.People = new PeopleSetup { … }`.
+[AppSetting("People")]
+public class PeopleSetup {
+  /// A role the app must never be left without an ACTIVE holder of — its admin role, typically. Revoking it from, or
+  /// deactivating, its last active holder is refused.
+  public role? KeepOneOf = null;
+  /// Whether every change needs a reason written down. Resetting a second factor always does. An organisation's policy
+  /// may require it for every app it runs.
+  [OrgPolicy(OrgPolicyMode.Lock)] public bool ReasonRequired = false;
+  /// Who the people list shows — everybody by default; derive and override to show only the team (a helpdesk's
+  /// customers sign in too, and are not who its admins look after here).
+  public PeopleDirectory Directory = new PeopleDirectory();
+}
+
+/// Who the user manager lists — everybody with an account by default. Derive and override `Listed` to name fewer, READ
+/// by a query the database answers, so the people left out are never read at all:
+///
+///     public class TeamOnly : PeopleDirectory {
+///       public override List<Principal>? Listed() { return Principal.Where(p => p is Agent).ToList(); }
+///     }
+///     app.People = new PeopleSetup { …, Directory = new TeamOnly() };
+///
+/// `null` — the default — lists everybody, searched and taken a page at a time by the list itself.
+/// ⚑ A list of the people and not a test of each one: a helpdesk's customers sign in too, and a test asked of every
+///   principal read every customer on every open of the people page, to show the team.
+public class PeopleDirectory {
+  public virtual List<Principal>? Listed() { return null; }
+}
+
+// ⚠ Appended, never inserted: an enum is stored by position.
+/// What an access change does.
+public enum AccessChangeKind {
+  [Label("Role granted")] RoleGranted,
+  [Label("Role revoked")] RoleRevoked,
+  [Label("Deactivated")] Deactivated,
+  [Label("Reactivated")] Reactivated,
+  [Label("Two-step sign-in reset")] SecondFactorReset,
+  [Label("Signed out everywhere")] SignedOutEverywhere,
+  [Label("Added to an organisation")] JoinedOrganization,
+  [Label("Removed from an organisation")] LeftOrganization,
+  [Label("Organisation role granted")] OrganizationRoleGranted,
+  [Label("Organisation role revoked")] OrganizationRoleRevoked,
+  [Label("API key issued")] ApiKeyIssued,
+  [Label("API key revoked")] ApiKeyRevoked,
+  [Label("Integration added")] IntegrationAdded,
+  [Label("Integration reassigned")] IntegrationReassigned,
+}
+
+/// Where a change stands — applied in the same commit that records it, or refused (with the reason) when it breaks a rule
+/// every change obeys. The functions below check first and refuse before anything is recorded; the run checks again,
+/// because a change can be recorded without them.
+public enum AccessChangeState { Requested, Applied, Refused }
+
+/// One change to somebody's access — who made it, to whom, what, when and why. Made by a people manager and applied by
+/// its run in the same commit; never edited, never deleted. It IS the audit trail of who changed whose access.
+///
+/// SECURITY-INVARIANT(people-access-changes-are-recorded-and-the-managers-alone): a change to a person's access through
+/// the user manager — a role granted or revoked, an account deactivated or reactivated, a second factor reset, a
+/// sign-out everywhere, an organisation membership or role — is made ONLY by recording an `AccessChange`, which only the
+/// app's people managers (`ManagesPeople`) may create, naming themselves as `By`; it is never edited or deleted; it never
+/// carries the sign-in flow's `Authenticator` role, nor a role the app does not offer (`app.Roles`); an API key is put on
+/// an account or taken off one only this way (`ApiKey`), and an integration is given a new owner only this way
+/// (`IntegrationReassigned` — `Integration` denies every direct update); and a manager never
+/// deactivates themself or leaves the app without an active holder of `PeopleSetup.KeepOneOf`. Guarded by
+/// tests/access.test.osy.
+public entity AccessChange {
+  [Required] Principal Person;
+  [Required] Principal By;
+  AccessChangeKind Kind;
+  role? Role;
+  Organization? Organization;
+  /// The API key issued or revoked — set only on those two kinds.
+  ApiKey? Key;
+  /// The integration an `IntegrationAdded` change names — what it is called when asked for, and the account its run made —
+  /// or the one an `IntegrationReassigned` change gives to somebody else. `Person` on both kinds is the person who answers
+  /// for it from then on.
+  [MaxLength(100)] string? IntegrationName;
+  Integration? Integration;
+  [MaxLength(500)] string Reason = "";
+  DateTime At = DateTime.UtcNow;
+  AccessChangeState State;
+  /// Why it was not applied — set only on a refused change.
+  [MaxLength(500)] string? Refusal;
+
+  security {
+    // The managers read every change; a person reads what was done to their own access.
+    allow read when ManagesPeople || IsAuthenticated where Person == user;
+    allow read when ManagesPeople;
+    allow create when ManagesPeople;
+    deny create where By != user;
+    // `Role != null` first: a change with no role is unknown to `Role == …`, and an unknown deny applies.
+    deny create where Role != null && Role == role.Authenticator;
+  }
+}
+
+workflow AccessChangeFlow {
+  Tracks    = AccessChange.State;
+  Autostart = true;
+  Initial   = Requested;
+
+  // Applied in the commit that records it: the record and the change land together or not at all. The run writes as the
+  // system — which is what lets it change what no person may write directly (whether an account may sign in, its second
+  // factor) — so everything the change is allowed to do is decided HERE, not by the caller.
+  state Requested {
+    enter {
+      var c = this.Item;
+      var problem = AccessProblem(c.Person, c.By, c.Kind, c.Role, c.Organization, c.Reason);
+      // A key change is checked against the account itself — its key slots, whether it may sign in — which only the
+      // run (the system) can read.
+      if (problem == "" && (c.Kind == AccessChangeKind.ApiKeyIssued || c.Kind == AccessChangeKind.ApiKeyRevoked)) {
+        problem = ApiKeyProblem(c);
+      }
+      if (problem == "" && c.Kind == AccessChangeKind.IntegrationReassigned) { problem = ReassignProblem(c.Integration, c.Person); }
+      if (problem != "") {
+        c.Refusal = problem;
+        goto Refused;
+      }
+      ApplyAccessChange(c);
+      goto Applied;
+    }
+  }
+  terminal success Applied { }
+  terminal error Refused { Message = "access change refused"; }
+}
+
+/// "" when the change obeys every rule a change obeys, else the sentence saying which it breaks: a role must be named
+/// (and, to be given, be one the app offers); a manager never deactivates themself; the app is never left without an
+/// active holder of `PeopleSetup.KeepOneOf`; a second factor is reset only with a reason, and only for an account that
+/// has one to reset; an organisation change names its organisation.
+[SuppressWarning("cost-unbounded-read")]   // the active holders of the one role the app must keep — its admins
+public string AccessProblem(Principal person, Principal by, AccessChangeKind kind, role? r, Organization? org, string reason) {
+  var setup = App.Setting<PeopleSetup>();
+  if (setup.ReasonRequired && reason.Trim() == "") { return "Say why — every change to somebody's access is recorded with its reason."; }
+  var needsRole = kind == AccessChangeKind.RoleGranted || kind == AccessChangeKind.RoleRevoked
+    || kind == AccessChangeKind.OrganizationRoleGranted || kind == AccessChangeKind.OrganizationRoleRevoked
+    || kind == AccessChangeKind.IntegrationAdded;
+  if (needsRole && r == null) { return "Say which role."; }
+  if ((kind == AccessChangeKind.RoleGranted || kind == AccessChangeKind.OrganizationRoleGranted
+       || kind == AccessChangeKind.IntegrationAdded) && !IsOfferedRole(r!.Value)) {
+    return "That role is not one this app hands out.";
+  }
+  if (kind == AccessChangeKind.IntegrationAdded || kind == AccessChangeKind.IntegrationReassigned) {
+    // `person` is who answers for it — somebody who is here, and a person.
+    if (person is Integration) { return "An integration is answered for by a person — choose who owns it."; }
+    if (!person.IsActive) { return "That account is deactivated — choose an active person to own the integration."; }
+  }
+  var needsOrg = kind == AccessChangeKind.JoinedOrganization || kind == AccessChangeKind.LeftOrganization
+    || kind == AccessChangeKind.OrganizationRoleGranted || kind == AccessChangeKind.OrganizationRoleRevoked;
+  if (needsOrg && org == null) { return "Say which organisation."; }
+  if (kind == AccessChangeKind.Deactivated && person.Id == by.Id) {
+    return "You cannot deactivate yourself — ask another person who looks after the app's people.";
+  }
+  if (setup.KeepOneOf != null) {
+    var keep = setup.KeepOneOf.Value;
+    var losesIt = (kind == AccessChangeKind.RoleRevoked && r != null && r.Value == keep)
+      || (kind == AccessChangeKind.Deactivated && RoleGrant.Any(g => g.Member == person && g.Role == keep));
+    // ⚠ A PERSON, not an integration that happens to hold the role: a program cannot be the app's last admin.
+    var others = RoleGrant.Where(g => g.Member != person && g.Role == keep && g.Member.IsActive).Include(g => g.Member).ToList();
+    if (losesIt && !others.Any(g => !(g.Member is Integration))) {
+      var name = RoleLabel(keep);
+      return $"The app needs at least one active {(name != "" ? name : "holder of that role")} — give the role to somebody else first.";
+    }
+  }
+  if (kind == AccessChangeKind.SecondFactorReset) {
+    if (reason.Trim() == "") { return "Say why — a reset second factor is recorded with its reason (who asked, and how you knew it was them)."; }
+    if (!(person is User)) { return "This account does not sign in with two-step sign-in here, so there is nothing to reset."; }
+  }
+  return "";
+}
+
+/// Apply `change`, which `AccessProblem` has passed — as the system (its run), so what no person may write directly
+/// (whether an account may sign in, its second factor) is written here and nowhere else.
+[SuppressWarning("cost-unbounded-read")]   // one person's grants of one role
+void ApplyAccessChange(AccessChange change) {
+  var person = change.Person;
+  // The app is told (`RolesSetup.Events`) in this same write, so what it does about a role — a desk putting a new agent
+  // on its queues — lands with the grant or not at all.
+  if (change.Kind == AccessChangeKind.RoleGranted) {
+    var r = change.Role!.Value;
+    // One row per person and role (`RoleGrant`'s unique rule). A grant already there — another manager gave the same
+    // role at the same moment — is left as it is, and this change applies as nothing left to do: the person holds the
+    // role, which is what was asked. The statement lands with the commit that records the change, or not at all.
+    // The app is told only when the grant is NEW — the answer counts the rows actually created.
+    var made = new List<Principal> { person }.Insert(p => new RoleGrant { Member = p, Role = r }, onConflict: (held, mine) => { });
+    if (made > 0) { App.Setting<RolesSetup>().Events.Granted(person, r); }
+    return;
+  }
+  if (change.Kind == AccessChangeKind.RoleRevoked) {
+    var r = change.Role!.Value;
+    var held = RoleGrant.Where(x => x.Member == person && x.Role == r).ToList();
+    foreach (var g in held) { g.Delete(); }
+    if (held.Count > 0) { App.Setting<RolesSetup>().Events.Revoked(person, r); }
+    return;
+  }
+  // SECURITY-INVARIANT(sessions-ended-by-an-administrator-say-so): deactivating, resetting a second factor and signing
+  // out everywhere end every session the person has when this commits — an account that may no longer sign in must not
+  // go on using the ticket it already holds. Guarded by tests/access.test.osy.
+  if (change.Kind == AccessChangeKind.Deactivated) {
+    person.IsActive = false;
+    Security.SignOutEverywhere(person.Id);
+    // …and no API key outlives it: a program holding one is refused from the next request on.
+    TakeEveryKeyOff(person, change.By);
+    return;
+  }
+  if (change.Kind == AccessChangeKind.ApiKeyIssued) { ApplyKeyIssued(change); return; }
+  if (change.Kind == AccessChangeKind.IntegrationAdded) { MakeIntegration(change); return; }
+  if (change.Kind == AccessChangeKind.IntegrationReassigned) { change.Integration!.Owner = person; return; }
+  if (change.Kind == AccessChangeKind.ApiKeyRevoked) { TakeKeyOff(change.Key!, change.By); return; }
+  if (change.Kind == AccessChangeKind.Reactivated) { person.IsActive = true; return; }
+  if (change.Kind == AccessChangeKind.SecondFactorReset) {
+    if (person is User account) { ClearSecondFactor(account); }
+    Security.SignOutEverywhere(person.Id);
+    return;
+  }
+  if (change.Kind == AccessChangeKind.SignedOutEverywhere) { Security.SignOutEverywhere(person.Id); return; }
+  var org = change.Organization!;
+  if (change.Kind == AccessChangeKind.JoinedOrganization) { Join(org, person, MembershipSource.Local); return; }
+  if (change.Kind == AccessChangeKind.LeftOrganization) { Leave(org, person); return; }
+  if (change.Kind == AccessChangeKind.OrganizationRoleGranted) { GrantIn(org, person, change.Role!.Value); return; }
+  if (change.Kind == AccessChangeKind.OrganizationRoleRevoked) { RevokeIn(org, person, change.Role!.Value); return; }
+}
+
+// ── what a people manager calls — each records its change, which is applied as it commits ──────────────────────────
+
+AccessChange RecordAccessChange(Principal person, AccessChangeKind kind, role? r, Organization? org, string reason) {
+  var me = Session.CurrentUser!;
+  var problem = AccessProblem(person, me, kind, r, org, reason);
+  if (problem != "") { throw new ValidationException(problem); }
+  var made = new AccessChange { Person = person, By = me, Kind = kind, Role = r, Organization = org,
+                                Reason = reason.Trim(), At = DateTime.UtcNow };
+  UnitOfWork.Commit();
+  return made;
+}
+
+/// Give `person` the app role `r` (one the app offers).
+public AccessChange GrantRole(Principal person, role r, string reason = "") { return RecordAccessChange(person, AccessChangeKind.RoleGranted, r, null, reason); }
+/// Take the app role `r` from `person`.
+public AccessChange RevokeRole(Principal person, role r, string reason = "") { return RecordAccessChange(person, AccessChangeKind.RoleRevoked, r, null, reason); }
+/// Stop `person` signing in, and sign them out everywhere. Their work stays theirs.
+public AccessChange Deactivate(Principal person, string reason = "") { return RecordAccessChange(person, AccessChangeKind.Deactivated, null, null, reason); }
+/// Let a deactivated `person` sign in again.
+public AccessChange Reactivate(Principal person, string reason = "") { return RecordAccessChange(person, AccessChangeKind.Reactivated, null, null, reason); }
+/// Clear `person`'s two-step sign-in (a lost phone) and sign them out everywhere; they set it up again at their next
+/// sign-in. `reason` is required — who asked, and how you knew it was them.
+public AccessChange ResetSecondFactor(Principal person, string reason) { return RecordAccessChange(person, AccessChangeKind.SecondFactorReset, null, null, reason); }
+/// End every session `person` has, wherever it is.
+public AccessChange SignOutEverywhere(Principal person, string reason = "") { return RecordAccessChange(person, AccessChangeKind.SignedOutEverywhere, null, null, reason); }
+/// Put `person` in `org`.
+public AccessChange AddToOrganization(Organization org, Principal person, string reason = "") { return RecordAccessChange(person, AccessChangeKind.JoinedOrganization, null, org, reason); }
+/// Take `person` out of `org`, with every role they held there.
+public AccessChange RemoveFromOrganization(Organization org, Principal person, string reason = "") { return RecordAccessChange(person, AccessChangeKind.LeftOrganization, null, org, reason); }
+/// Give `person` the role `r` within `org`.
+public AccessChange GrantInOrganization(Organization org, Principal person, role r, string reason = "") { return RecordAccessChange(person, AccessChangeKind.OrganizationRoleGranted, r, org, reason); }
+/// Take the role `r` within `org` from `person`.
+public AccessChange RevokeInOrganization(Organization org, Principal person, role r, string reason = "") { return RecordAccessChange(person, AccessChangeKind.OrganizationRoleRevoked, r, org, reason); }
+

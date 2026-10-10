@@ -1,0 +1,204 @@
+// The user manager, driven as a manager drives it. `osy test --pixels` photographs each (Ui.Shot).
+
+using Osysharp.Identity;
+using Osysharp.UserAccounts;
+using Osysharp.UserManagement;
+using Osysharp.Invitations;
+
+[TestFixture]
+void Office() {
+  var sam = new User { Email = "sam@desk.test", DisplayName = "Sam Okafor", PasswordHash = Security.HashPassword("correct-horse-1"),
+                       EmailVerifiedAt = DateTime.UtcNow, LastLoginAt = DateTime.UtcNow };
+  new RoleGrant { Member = sam, Role = AppRole.Admin };
+  var ari = new User { Email = "ari@desk.test", DisplayName = "Ari Lindqvist", PasswordHash = Security.HashPassword("correct-horse-2"),
+                       EmailVerifiedAt = DateTime.UtcNow, LastLoginAt = DateTime.UtcNow };
+  new RoleGrant { Member = ari, Role = AppRole.Admin };
+  var ada = new User { Email = "ada.moreno@desk.test", DisplayName = "Ada Moreno", PasswordHash = Security.HashPassword("correct-horse-3"),
+                       EmailVerifiedAt = DateTime.UtcNow, TotpSecret = "sealed", SecondFactorOnAt = DateTime.UtcNow };
+  new RoleGrant { Member = ada, Role = AppRole.Agent };
+  new User { Email = "mo.haddad@desk.test", DisplayName = "Mo Haddad", PasswordHash = Security.HashPassword("correct-horse-4"),
+             EmailVerifiedAt = DateTime.UtcNow };
+  new User { Email = "tom.berg@desk.test", DisplayName = "Tom Berg", PasswordHash = Security.HashPassword("correct-horse-5"), IsActive = false };
+}
+
+principal Sam => User.Single(u => u.Email == "sam@desk.test");
+principal Mo => User.Single(u => u.Email == "mo.haddad@desk.test");
+
+[Test(Office)]
+void a_manager_finds_a_person_gives_them_a_role_and_the_change_is_in_their_history() {
+  Ui.Viewport(1440, 900);
+  Ui.SignInAs(Sam);
+  Ui.Visit("/people");
+  Assert.Visible("Ada Moreno", within: "Everyone");
+  Assert.Visible("Tom Berg", within: "Everyone");
+  Ui.Shot("people-list");
+  Ui.Fill("Search people", "mo.h");
+  Ui.Press("Enter");
+  Assert.Hidden("Ada Moreno");
+  Ui.Click("Mo Haddad");
+  Assert.Visible("No roles — they can sign in, and do nothing that needs one.");
+  Ui.Click("Lead", within: "Give a role");
+  Assert.Visible("Mo Haddad is now Lead.");
+  Assert.Visible("Granted Lead", within: "History");
+  Ui.Shot("people-person");
+}
+
+[Test(Office)]
+void resetting_a_lost_second_factor_asks_why_and_records_it() {
+  Ui.Viewport(1440, 900);
+  Ui.SignInAs(Sam);
+  Ui.Visit("/people");
+  Ui.Click("Ada Moreno");
+  Ui.Click("Reset two-step sign-in");
+  Assert.Dialog("Reset two-step sign-in?");
+  Ui.Shot("people-reset-dialog");
+  Ui.Click("Reset");
+  Assert.Visible("Say why");
+  Ui.Fill("Why — who asked, and how you knew it was them", "Lost her phone; confirmed on a call");
+  Ui.Click("Reset");
+  Assert.Visible("Two-step sign-in reset", within: "History");
+}
+
+/// ⭐ THE LIST READS AS A LIST: roles as chips, the last sign-in in words ("Never", not a mono
+/// "never"), nothing wider than a phone — and the same in the dark.
+[Test(Office)]
+void the_people_list_reads_at_a_glance_on_a_phone_and_in_the_dark() {
+  Ui.Viewport(1440, 900);
+  Ui.SignInAs(Sam);
+  Ui.Visit("/people");
+  Assert.Visible("Never", within: "Mo Haddad");
+  Assert.Visible("Agent", within: "Ada Moreno");
+  Assert.Visible("5 people");
+  Ui.Viewport(390, 844);
+  Ui.Visit("/people");
+  Assert.Visible("Ada Moreno", within: "Everyone");
+  Assert.NoOverflow();
+  Ui.Shot("people-list-phone");
+  Ui.Viewport(1440, 900);
+  Ui.Theme("dark");                 // the same page, in the dark
+  Ui.Visit("/people");
+  Assert.Visible("Ada Moreno", within: "Everyone");
+  Assert.Readable("Ada Moreno");
+  Ui.Shot("people-list-dark");
+}
+
+[Test(Office)]
+void the_people_page_is_only_for_people_managers() {
+  Ui.SignInAs(Mo);
+  Ui.Visit("/people");
+  Assert.Hidden("Waiting invitations");
+}
+
+[Test(Office)]
+void inviting_from_the_people_page_lists_the_invitation_as_waiting() {
+  Ui.Viewport(1440, 900);
+  Ui.SignInAs(Sam);
+  Ui.Visit("/people");
+  Ui.Click("Invite someone");
+  Assert.Dialog("Invite someone");
+  Ui.Fill("Email", "nina@desk.test");
+  Ui.Click("Agent", within: "Role");
+  Ui.Shot("people-invite");
+  Ui.Click("Send invitation");
+  // Sent: the dialog closes, and the invitation is waiting.
+  Assert.Hidden("Send invitation");
+  Assert.Visible("nina@desk.test", within: "Waiting invitations");
+}
+
+/// A manager issues Ada a key — shown once, with a copy button — finds it in the list with whose it is and that it was
+/// never used, and revokes it.
+[Test(Office)]
+void a_manager_issues_a_key_sees_it_once_and_revokes_it() {
+  Ui.Viewport(1440, 900);
+  Ui.SignInAs(Sam);
+  Ui.Visit("/people/keys");
+  Assert.Visible("No keys yet");
+  Ui.Click("Issue a key");
+  Assert.Dialog("Issue an API key");
+  User? ada = null;
+  runas (Sam) { ada = User.Single(u => u.Email == "ada.moreno@desk.test"); }
+  Ui.Select("For", ada!);
+  Ui.Fill("What it is for", "Nightly export");
+  Ui.Shot("api-keys-issue");
+  Ui.Click("Issue it");
+  Assert.Visible("The key for Ada Moreno — Nightly export");
+  Assert.Visible("Copy it into the program now — it is not shown again.");
+  Ui.Shot("api-keys-once");
+  Ui.Click("I have copied it");
+  Assert.Hidden("Copy it into the program now — it is not shown again.");
+  Assert.Visible("Acts as Ada Moreno", within: "Keys in use");
+  Assert.Visible("Never used", within: "Keys in use");
+  Ui.Shot("api-keys-list");
+  Ui.Click("Revoke", within: "Keys in use");
+  Assert.Dialog("Revoke “Nightly export”?");
+  Ui.Click("Revoke it");
+  Assert.Visible("a request that presents it is refused from now on.");
+  Assert.Visible("No keys in use");
+  Ui.Theme("dark");
+  Ui.Click("Show revoked keys (1)");
+  Ui.Shot("api-keys-revoked-dark");
+}
+
+/// A manager adds an integration in one step — its name, what it may do — and is shown its first key once; the
+/// integration is listed with its role, its owner and its key, the key acts as it, and switching it off revokes the key.
+[Test(Office)]
+void a_manager_adds_an_integration_issues_its_key_and_switches_it_off() {
+  Ui.Viewport(1440, 900);
+  Ui.SignInAs(Sam);
+  Ui.Visit("/people/keys");
+  Assert.Visible("No integrations yet");
+  Ui.Click("Add an integration");
+  Assert.Dialog("Add an integration");
+  Ui.Fill("Name", "Zapier");
+  Ui.Click("Agent", within: "What it may do");
+  Ui.Shot("integrations-add");
+  Ui.Click("Add it and issue a key");
+  Assert.Visible("The key for Zapier — Zapier");
+  Ui.Click("I have copied it");
+  Assert.Visible("Owned by " , within: "Integrations");
+  Assert.Visible("Keys in use: 1", within: "Integrations");
+  Assert.Visible("Acts as Zapier", within: "Keys in use");
+  Ui.Shot("integrations-list");
+  runas (Sam) {
+    Assert.Equal(1, Integration.Count(i => i.DisplayName == "Zapier" && i.IsActive));
+    Assert.Equal(1, ApiKey.Count(k => k.RevokedAt == null && k.Slot > 0));
+  }
+  Ui.Click("Switch off", within: "Integrations");
+  Assert.Dialog("Switch off Zapier?");
+  Ui.Click("Switch it off");
+  Assert.Visible("Zapier is switched off — every key it held is refused from now on.");
+  Assert.Visible("No integrations yet");
+  runas (Sam) { Assert.Equal(0, ApiKey.Count(k => k.RevokedAt == null && k.Slot > 0)); }
+}
+
+/// An integration whose owner left keeps working, and its row says "Owner deactivated"; a manager reassigns it to
+/// somebody who is here, and the row names them.
+[Test(Office)]
+void an_integration_whose_owner_left_is_marked_and_a_manager_reassigns_it() {
+  User? ari = null;
+  User? sam = null;
+  runas (Sam) {
+    ari = User.Single(u => u.Email == "ari@desk.test");
+    sam = User.Single(u => u.Email == "sam@desk.test");
+    var zapier = AddIntegration("Zapier", AppRole.Agent, owner: ari!);
+    IssueApiKey(zapier, "Web form");
+    Deactivate(ari!, "Left the company");
+  }
+  Ui.Viewport(1440, 900);
+  Ui.SignInAs(Sam);
+  Ui.Visit("/people/keys");
+  Assert.Visible("Owned by Ari Lindqvist", within: "Integrations");
+  Assert.Visible("Owner deactivated", within: "Integrations");
+  Ui.Shot("integrations-owner-left");
+  Ui.Click("Reassign", within: "Integrations");
+  Assert.Dialog("Reassign Zapier");
+  Ui.Select("New owner", sam!);
+  Ui.Fill("Why", "Ari left the team");
+  Ui.Shot("integrations-reassign");
+  Ui.Click("Reassign it");
+  Assert.Visible("Zapier is now answered for by Sam Okafor. Its keys go on working.");
+  Assert.Visible("Owned by Sam Okafor", within: "Integrations");
+  Assert.Hidden("Owner deactivated");
+  Assert.Visible("Keys in use: 1", within: "Integrations");
+  runas (Sam) { Assert.Equal("Gave the integration “Zapier” to Sam Okafor", AccessTrail()[0].What); }
+}

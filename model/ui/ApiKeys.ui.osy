@@ -1,0 +1,321 @@
+// The API keys page — every key in use, whose it is, what it is for, who issued it and when it was last used; issuing
+// one (shown once, with a copy button) and revoking one. Set in Osysharp.Ui's settings vocabulary like the people list.
+//
+// ⚑ NOTHING HERE READS A KEY BACK. A key is shown once, in the moment it is issued, to the manager who issued it; after
+//   that its last four characters are what tell two apart.
+
+namespace Osysharp.UserManagement;
+
+using Osysharp.Identity;
+using Osysharp.Ui;
+
+/// The keys, issuing one and revoking one, and the integrations that hold them. In a test: `Ui.Click("Issue a key")`,
+/// `Ui.Select("For", ada)`, `Ui.Fill("What it is for", "Nightly export")`, `Ui.Click("Issue it")` — or
+/// `Ui.Click("Add an integration")`, `Ui.Fill("Name", "Zapier")`, `Ui.Click("Agent")`, `Ui.Click("Add it and issue a key")`
+/// — or, for one whose owner has left, `Ui.Click("Reassign", within: "Integrations")`, `Ui.Select("New owner", sam)`,
+/// `Ui.Click("Reassign it")`.
+[Composable]
+public component ApiKeyManager() {
+  List<ApiKeyLine> lines = [];
+  List<ApiKeyLine> revoked = [];
+  List<Principal> holders = [];
+  bool showRevoked = false;
+  string notice = "";
+  // issuing
+  bool issuing = false;
+  Principal? forWhom = null;
+  string name = "";
+  string problem = "";
+  // a key, shown once
+  string key = "";
+  string keyFor = "";
+  bool copied = false;
+  // integrations
+  List<IntegrationLine> integrations = [];
+  List<RoleOption> roles = [];
+  bool adding = false;
+  string integrationName = "";
+  RoleOption? integrationRole = null;
+  string addProblem = "";
+  Guid switchingOff = Guid.Empty;
+  string switchingOffName = "";
+  // reassigning an integration to a new owner
+  Guid reassigning = Guid.Empty;
+  string reassigningName = "";
+  string reassigningFrom = "";
+  List<Principal> owners = [];
+  Principal? newOwner = null;
+  string reassignReason = "";
+  string reassignProblem = "";
+  // revoking
+  Guid revoking = Guid.Empty;
+  string revokingName = "";
+  string revokingWhose = "";
+  string revokingWords = "";
+
+  on mount { Load(); }
+
+  action Load() {
+    var now = DateTime.UtcNow;
+    lines = ApiKeyLines(now);
+    revoked = ApiKeyLines(now, withRevoked: true).Where(l => l.Revoked).ToList();
+    integrations = IntegrationLines();
+  }
+  action StartAdd() {
+    roles = OfferedRoles().Where(o => o.Role != null).ToList();
+    integrationName = ""; integrationRole = null; addProblem = ""; adding = true;
+  }
+  action StopAdd() { adding = false; }
+  action ChooseRole(RoleOption o) { integrationRole = o; }
+  // ONE STEP: the integration is added and its first key issued, shown once — an integration with no key does nothing.
+  action AddAndIssue() {
+    addProblem = "";
+    try {
+      if (integrationRole == null) { addProblem = "Choose what it may do — the role it acts with."; return; }
+      var made = AddIntegration(integrationName, integrationRole!.Role!.Value);
+      var issued = IssueApiKey(made, integrationName);
+      key = issued.Key;
+      keyFor = made.DisplayName + " — " + integrationName.Trim();
+      notice = "";
+      adding = false;
+      Load();
+    } catch (Exception ex) { addProblem = ex.Message; }
+  }
+  action AskSwitchOff(IntegrationLine line) { switchingOff = line.Id; switchingOffName = line.Name; }
+  action StopSwitchOff() { switchingOff = Guid.Empty; }
+  // Whoever answers for it can be anyone active on the people list — a person, never another integration.
+  action AskReassign(IntegrationLine line) {
+    owners = KeyHolders().Where(p => !(p is Integration)).ToList();
+    reassigning = line.Id; reassigningName = line.Name; reassigningFrom = line.Owner;
+    newOwner = null; reassignReason = ""; reassignProblem = "";
+  }
+  action StopReassign() { reassigning = Guid.Empty; }
+  action Reassign() {
+    reassignProblem = "";
+    try {
+      if (newOwner == null) { reassignProblem = "Choose who answers for it from now on."; return; }
+      ReassignIntegration(Integration.Single(i => i.Id == reassigning), newOwner!, reassignReason);
+      notice = reassigningName + " is now answered for by " + HolderName(newOwner!) + ". Its keys go on working.";
+      reassigning = Guid.Empty;
+      Load();
+    } catch (Exception ex) { reassignProblem = ex.Message; }
+  }
+  action SwitchOff() {
+    try {
+      Deactivate(Integration.Single(i => i.Id == switchingOff));
+      notice = switchingOffName + " is switched off — every key it held is refused from now on.";
+      switchingOff = Guid.Empty;
+      Load();
+    } catch (Exception ex) { notice = ex.Message; switchingOff = Guid.Empty; }
+  }
+  action StartIssue() {
+    holders = KeyHolders();
+    forWhom = null;
+    name = ""; problem = ""; issuing = true;
+  }
+  action StopIssue() { issuing = false; }
+  action Issue() {
+    problem = "";
+    try {
+      if (forWhom == null) { problem = "Choose who the key is for."; return; }
+      var made = IssueApiKey(forWhom!, name);
+      key = made.Key;
+      keyFor = HolderName(forWhom!) + " — " + name.Trim();
+      notice = "";
+      issuing = false;
+      Load();
+    } catch (Exception ex) { problem = ex.Message; }
+  }
+  action DoneWithKey() { key = ""; keyFor = ""; copied = false; }
+  action CopyKey() { Clipboard.Copy(key); copied = true; }
+  action AskRevoke(ApiKeyLine line) {
+    revoking = line.Id;
+    revokingName = "“" + line.Name + "”";
+    revokingWhose = line.Ending + " of " + line.Holder;
+    revokingWords = "“" + line.Name + "” " + line.Ending + " of " + line.Holder;
+  }
+  action StopRevoke() { revoking = Guid.Empty; }
+  action Revoke() {
+    try {
+      RevokeApiKey(ApiKey.Single(k => k.Id == revoking));
+      notice = "Revoked " + revokingWords + " — a request that presents it is refused from now on.";
+      revoking = Guid.Empty;
+      Load();
+    } catch (Exception ex) { notice = ex.Message; revoking = Guid.Empty; }
+  }
+  action ToggleRevoked() { showRevoked = !showRevoked; }
+
+  string HolderName(Principal p) {
+    if (p is Integration) { return p.DisplayName + " (integration)"; }
+    return p.DisplayName != "" ? p.DisplayName : p.Email;
+  }
+
+  render {
+    SettingsPage("API keys", description: "A key lets a program call this app's API — as an integration of its own, or as the person it was issued to — with exactly what its holder may do. It is shown once, when it is issued.") {
+      if (notice != "") { Alert(notice); }
+      if (key != "") {
+        Card(title: "The key for " + keyFor) {
+          Stack(gap: 2, label: "API key") {
+            Text("Copy it into the program now — it is not shown again. The program sends it in the X-API-Key header.",
+                 fontSize: FontSize.Label, color: Colors.TextSecondary);
+            Row(gap: 2, align: Align.Center, wrap: Wrapping.Wrap) {
+              Box(px: 3, py: 2, rounded: Radius.Md, bg: Colors.Sunken, borderW: 1, border: Colors.Border, maxW: "100%", grow: 1, minW: "0") {
+                Text(key, fontFamily: Font.Mono, fontSize: FontSize.Label, wordBreak: WordBreak.BreakAll, userSelect: UserSelect.All);
+              }
+              Button(copied ? "Copied" : "Copy", onPress: CopyKey, tone: Tone.Default, size: Size.Sm, announceAs: "Copy the key");
+            }
+            Row { Button("I have copied it", onPress: DoneWithKey, tone: Tone.Primary, size: Size.Sm); }
+          }
+        }
+      }
+      SettingsSection("Keys in use", description: "Each acts as its holder and nobody else. Revoke one and the next request that presents it is refused; deactivating a person revokes theirs.") {
+        Stack(gap: 0, role: UiRole.List, label: "Keys in use") {
+          if (lines.Count == 0) {
+            EmptyState(revoked.Count > 0 ? "No keys in use" : "No keys yet", body: "Issue one to let a program call this app's API as somebody on the team.");
+          }
+          foreach (var line in lines) { ApiKeyRow(line, () => AskRevoke(line)); }
+        }
+        Row(gap: 2) { Button("Issue a key", onPress: StartIssue, tone: Tone.Primary, size: Size.Sm); }
+      }
+      SettingsSection("Integrations", description: "A program that works with the app under its own name — what it does is recorded as its own, never as a teammate's. It holds keys and a role, and can never sign in. Switch it off and every key it holds stops working.") {
+        Stack(gap: 0, role: UiRole.List, label: "Integrations") {
+          if (integrations.Count == 0) {
+            EmptyState("No integrations yet", body: "Add one for each program that calls the app — Zapier, a nightly export, a partner's system.");
+          }
+          foreach (var i in integrations) { IntegrationRow(i, () => AskSwitchOff(i), () => AskReassign(i)); }
+        }
+        Row(gap: 2) { Button("Add an integration", onPress: StartAdd, tone: Tone.Default, size: Size.Sm); }
+      }
+      if (revoked.Count > 0) {
+        SettingsSection("Revoked", description: "Kept so you can see what a key was for and who took it away.") {
+          Row { Button(showRevoked ? "Hide revoked keys" : $"Show revoked keys ({revoked.Count})", onPress: ToggleRevoked, tone: Tone.Ghost, size: Size.Sm); }
+          if (showRevoked) {
+            Stack(gap: 0, role: UiRole.List, label: "Revoked keys") {
+              foreach (var line in revoked) { ApiKeyRow(line, null); }
+            }
+          }
+        }
+      }
+    }
+    if (issuing) {
+      Dialog("Issue an API key", onDismiss: StopIssue,
+             subtitle: "The program that holds it acts as this person — it can do exactly what they can, and nothing more.") {
+        if (holders.Count == 0) {
+          Hint("There is nobody to issue a key to — every account on the people list is deactivated.");
+        } else {
+          Dropdown("For", value: forWhom, options: holders, placeholder: "Choose a person…") { p => Text(HolderName(p)); }
+        }
+        Field("What it is for", value: name, placeholder: "Nightly export", hint: "How you will recognise it in the list.");
+        if (problem != "") { Alert(problem, tone: Tone.Danger); }
+        Row(gap: 2, justify: Justify.End) {
+          Button("Cancel", onPress: StopIssue, tone: Tone.Ghost);
+          Button("Issue it", onPress: Issue, tone: Tone.Primary, disabled: holders.Count == 0);
+        }
+      }
+    }
+    if (adding) {
+      Dialog("Add an integration", onDismiss: StopAdd,
+             subtitle: "It acts under its own name with the role you choose, and you answer for it. It gets its first key now.") {
+        Field("Name", value: integrationName, placeholder: "Zapier", hint: "What it is — everything it does is recorded under this name.");
+        Stack(gap: 1, label: "What it may do") {
+          Text("What it may do", fontSize: FontSize.Label, fontWeight: FontWeight.Medium);
+          Row(gap: 2, wrap: Wrapping.Wrap) {
+            foreach (var o in roles) {
+              Button(o.Label, onPress: () => ChooseRole(o), size: Size.Sm,
+                     tone: integrationRole != null && integrationRole!.Label == o.Label ? Tone.Primary : Tone.Default);
+            }
+          }
+          if (integrationRole != null) {
+            Text(integrationRole!.Description, fontSize: FontSize.Caption, color: Colors.TextSecondary);
+          }
+        }
+        if (addProblem != "") { Alert(addProblem, tone: Tone.Danger); }
+        Row(gap: 2, justify: Justify.End) {
+          Button("Cancel", onPress: StopAdd, tone: Tone.Ghost);
+          Button("Add it and issue a key", onPress: AddAndIssue, tone: Tone.Primary);
+        }
+      }
+    }
+    if (switchingOff != Guid.Empty) {
+      Dialog("Switch off " + switchingOffName + "?", onDismiss: StopSwitchOff,
+             subtitle: "Every key it holds is refused from its next request. What it already did stays recorded under its name.") {
+        Row(gap: 2, justify: Justify.End) {
+          Button("Cancel", onPress: StopSwitchOff, tone: Tone.Ghost);
+          Button("Switch it off", onPress: SwitchOff, tone: Tone.Danger);
+        }
+      }
+    }
+    if (reassigning != Guid.Empty) {
+      Dialog("Reassign " + reassigningName, onDismiss: StopReassign,
+             subtitle: "Choose who answers for it from now on: who to ask what it does and whether it is still needed. "
+                     + "Its keys and its role stay as they are, and the change is recorded.") {
+        Text("Owned by " + reassigningFrom, fontSize: FontSize.Label, color: Colors.TextSecondary);
+        Dropdown("New owner", value: newOwner, options: owners, placeholder: "Choose a person…") { p => Text(HolderName(p)); }
+        Field("Why", value: reassignReason, placeholder: "They left the team", hint: "Kept with the change in the access trail.");
+        if (reassignProblem != "") { Alert(reassignProblem, tone: Tone.Danger); }
+        Row(gap: 2, justify: Justify.End) {
+          Button("Cancel", onPress: StopReassign, tone: Tone.Ghost);
+          Button("Reassign it", onPress: Reassign, tone: Tone.Primary);
+        }
+      }
+    }
+    if (revoking != Guid.Empty) {
+      Dialog("Revoke " + revokingName + "?", onDismiss: StopRevoke,
+             subtitle: "The key " + revokingWhose + ". A program that still uses it is refused from its next request. This cannot be undone — issue a new key instead.") {
+        Row(gap: 2, justify: Justify.End) {
+          Button("Cancel", onPress: StopRevoke, tone: Tone.Ghost);
+          Button("Revoke it", onPress: Revoke, tone: Tone.Danger);
+        }
+      }
+    }
+  }
+}
+
+/// One integration: its name, the role it acts with, who answers for it (and, when they have left, that its owner is
+/// deactivated), how many keys it holds — and Reassign and Switch off.
+component IntegrationRow(IntegrationLine line, Action onSwitchOff, Action onReassign) {
+  render {
+    Row(gap: 3, align: Align.Start, py: 3, borderBW: 1, border: Colors.Border, role: UiRole.ListItem, label: line.Name) {
+      Box(pt: 1, decorative: true) { Icon(Icons.Link, size: 16, color: Colors.TextSecondary); }
+      Stack(gap: 1, grow: 1, minW: "0") {
+        Row(gap: 2, align: Align.Center, wrap: Wrapping.Wrap) {
+          Text(line.Name, fontWeight: FontWeight.Medium);
+          if (line.Roles != "") { Badge(line.Roles, tone: Tone.Default); }
+        }
+        Row(gap: 2, align: Align.Center, wrap: Wrapping.Wrap) {
+          Text("Owned by " + line.Owner, fontSize: FontSize.Label, color: Colors.TextSecondary, minW: "0");
+          // It keeps working when its owner leaves; this is what tells a manager to give it to somebody who is here.
+          if (!line.OwnerActive) { Badge("Owner deactivated", tone: Tone.Warning); }
+          Text($"Keys in use: {line.Keys}", fontSize: FontSize.Label, color: Colors.TextMuted);
+        }
+      }
+      Row(gap: 1, align: Align.Center) {
+        Button("Reassign", onPress: onReassign, tone: line.OwnerActive ? Tone.Ghost : Tone.Default, size: Size.Sm);
+        Button("Switch off", onPress: onSwitchOff, tone: Tone.Ghost, size: Size.Sm);
+      }
+    }
+  }
+}
+
+/// One key: what it is for, whose it is, how it ends, who issued it, when it was last used — and Revoke.
+component ApiKeyRow(ApiKeyLine line, Action? onRevoke) {
+  render {
+    Row(gap: 3, align: Align.Start, py: 3, borderBW: 1, border: Colors.Border, role: UiRole.ListItem,
+        label: line.Name + " — " + line.Holder, opacity: line.Revoked ? 0.75 : 1) {
+      Box(pt: 1, decorative: true) {
+        if (line.Revoked) { Icon(Icons.Lock, size: 16, color: Colors.TextMuted); }
+        else { Icon(Icons.Lock, size: 16, color: Colors.TextSecondary); }
+      }
+      Stack(gap: 1, grow: 1, minW: "0") {
+        Row(gap: 2, align: Align.Center, wrap: Wrapping.Wrap) {
+          Text(line.Name, fontWeight: FontWeight.Medium);
+          Text(line.Ending, fontFamily: Font.Mono, fontSize: FontSize.Caption, color: Colors.TextMuted);
+          if (line.Revoked) { Badge("Revoked", tone: Tone.Default); }
+        }
+        Text("Acts as " + line.Holder, fontSize: FontSize.Label, color: Colors.TextSecondary, minW: "0");
+        Text(line.Revoked ? line.RevokedWords : line.Issued + " · " + line.LastUsed, fontSize: FontSize.Caption, color: Colors.TextMuted, minW: "0");
+      }
+      if (onRevoke != null) { Button("Revoke", onPress: onRevoke!, tone: Tone.Ghost, size: Size.Sm); }
+    }
+  }
+}

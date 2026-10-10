@@ -1,0 +1,47 @@
+// Everything this app writes about its people: its roles, who looks after them, and how its roles read.
+using Osysharp.Identity;
+using Osysharp.UserAccounts;
+using Osysharp.Organizations;
+using Osysharp.UserManagement;
+
+[Role] enum AppRole { Authenticator, Agent, Lead, Admin, Integration }
+
+policy IsAdmin => RoleGrant.Any(g => g.Member == user && g.Role == AppRole.Admin);
+policy ManagesPeople => IsAdmin;
+policy MayInvite => IsAdmin;
+policy ManagesOrganizations => IsAdmin;
+
+app.Accounts = new AccountsSetup { AppName = "People Desk", SignupOpen = false, SecondFactor = new AdminsUseCodes() };
+
+// The integration account's role is the app's own business — never offered, so never handed out by a page.
+app.Roles = new RolesSetup { Offered = [
+  new RoleChoice { Role = AppRole.Agent, Label = "Agent", Description = "Works the desk." },
+  new RoleChoice { Role = AppRole.Lead, Label = "Lead", Description = "Watches the queues." },
+  new RoleChoice { Role = AppRole.Admin, Label = "Admin", Description = "Runs the desk." },
+] };
+
+app.People = new PeopleSetup { KeepOneOf = AppRole.Admin };
+
+// The user manager reads who holds which role; every change goes through it, so nothing here grants create or delete.
+partial entity RoleGrant { security { allow read when ManagesPeople; } }
+
+public class AdminsUseCodes : SecondFactorPolicy {
+  public override bool Required(User account) { return RoleGrant.Any(g => g.Member == account && g.Role == AppRole.Admin); }
+}
+
+// A small API, so a key issued on the people pages can be presented: who the caller is, as the platform resolved them.
+app.Apis = [
+  new RestApi("Team") {
+    Route = "team",
+    Auth = new ApiAuth { ApiKey = true },
+    Endpoints = [ new Endpoint(WhoAmI) { Method = HttpMethod.Get, Path = "/me" } ],
+  },
+];
+
+/// GET /me — the caller's address.
+public string WhoAmI() { return Session.CurrentUser == null ? "" : Session.CurrentUser!.Email; }
+
+/// A team of the app's own people.
+entity Team : Organization {
+  security { allow read, create, update when IsAdmin; }
+}

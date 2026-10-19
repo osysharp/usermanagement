@@ -24,8 +24,11 @@ public component PeopleManager(bool canInvite = true) {
   Guid open = Guid.Empty;
   PersonDetail detail = new PersonDetail();
   bool inviting = false;
+  // Whether the list has been read yet. Until it has, the list holds rows' places rather than saying "Nobody matches":
+  // a page paints before its reads answer, and an empty list is a claim about the people, not about the wait.
+  bool loaded = false;
 
-  on mount { people = PeopleList(); }
+  on mount { people = PeopleList(); loaded = true; }
 
   action Find() { people = PeopleList(search, showInactive); }
   action Open(Guid id) { detail = PersonDetailOf(id); open = id; }
@@ -60,7 +63,7 @@ public component PeopleManager(bool canInvite = true) {
               }
               Checkbox("Show deactivated people", value: showInactive, onToggle: Find);
               Spacer();
-              Text(people.Count == 1 ? "1 person" : people.Count + " people", fontFamily: Font.Mono,
+              Text(!loaded ? "" : people.Count == 1 ? "1 person" : people.Count + " people", fontFamily: Font.Mono,
                    fontSize: FontSize.Caption, color: Colors.TextMuted, fontVariant: FontVariant.TabularNums);
             }
             if (Layout.AtLeast(Tablet)) {
@@ -73,7 +76,12 @@ public component PeopleManager(bool canInvite = true) {
               }
             }
             Stack(gap: 0, role: UiRole.List, label: "Everyone") {
-              if (people.Count == 0) {
+              if (!loaded) {
+                // A person row's height (44px), three times — the list's place while it is read.
+                Box(px: 3, py: 3) { Skeleton(); }
+                Box(px: 3, py: 3) { Skeleton(); }
+                Box(px: 3, py: 3) { Skeleton(shape: SkeletonShape.HalfLine); }
+              } else if (people.Count == 0) {
                 Box(p: 5) {
                   EmptyState("Nobody matches", body: search == "" ? "There is nobody here yet — invite someone." : $"Nobody's name or address contains “{search}”.");
                 }
@@ -250,7 +258,7 @@ public component PersonPanel(PersonDetail d, Action onChanged, Action onClose) {
             Text(r.Label, fontWeight: FontWeight.Medium);
             if (r.Organization != "") { Text("at " + r.Organization, color: Colors.TextMuted, fontSize: FontSize.Caption); }
             Spacer();
-            if (r.Organization == "") { Button("Remove", onPress: () => Revoke(r), tone: Tone.Ghost, size: Size.Sm); }
+            if (r.Organization == "" && r.Removable) { Button("Remove", onPress: () => Revoke(r), tone: Tone.Ghost, size: Size.Sm); }
           }
         }
         if (d.Grantable.Count > 0) {
@@ -316,7 +324,7 @@ public component AccessTrailList(int take = 100) {
   List<AccessEvent> trail = [];
   on mount { trail = AccessTrail(take); }
   render {
-    Stack(gap: 0, role: UiRole.List, label: "Access changes") {
+    Stack(gap: 0, role: (trail.Count == 0) ? UiRole.Group : UiRole.List, label: "Access changes") {
       if (trail.Count == 0) { EmptyState("No changes yet", body: "Every change to somebody's access is listed here, with who made it and why."); }
       foreach (var e in trail) {
         Row(gap: 3, align: Align.Start, py: 2, borderBW: 1, border: Colors.Border, role: UiRole.ListItem, label: e.What) {

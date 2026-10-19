@@ -4,7 +4,7 @@ using Osysharp.UserAccounts;
 using Osysharp.Organizations;
 using Osysharp.UserManagement;
 
-[Role] enum AppRole { Authenticator, Agent, Lead, Admin, Integration }
+[Role] enum AppRole { Authenticator, Agent, Lead, Admin, Integration, TeamLead }
 
 policy IsAdmin => RoleGrant.Any(g => g.Member == user && g.Role == AppRole.Admin);
 policy ManagesPeople => IsAdmin;
@@ -18,6 +18,8 @@ app.Roles = new RolesSetup { Offered = [
   new RoleChoice { Role = AppRole.Agent, Label = "Agent", Description = "Works the desk." },
   new RoleChoice { Role = AppRole.Lead, Label = "Lead", Description = "Watches the queues." },
   new RoleChoice { Role = AppRole.Admin, Label = "Admin", Description = "Runs the desk." },
+  // Held only inside a team — never an app-wide role (`RoleChoice.HeldIn`).
+  new RoleChoice { Role = AppRole.TeamLead, Label = "Team lead", Description = "Leads one team.", HeldIn = RoleScope.Organization },
 ] };
 
 app.People = new PeopleSetup { KeepOneOf = AppRole.Admin };

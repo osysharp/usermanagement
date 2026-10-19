@@ -16,7 +16,7 @@ The **user manager**: who is in the app, what each of them may do, and who chang
 use Osysharp.Identity@0;
 use Osysharp.UserAccounts@1;
 use Osysharp.Organizations@0;
-use Osysharp.Invitations@0;
+use Osysharp.Invitations@1;
 use Osysharp.UserManagement@0;
 ```
 
@@ -37,6 +37,8 @@ app.Roles = new RolesSetup { Offered = [
   new RoleChoice { Role = AppRole.Lead, Label = "Lead", Description = "Watches the queues." },
   new RoleChoice { Role = AppRole.Admin, Label = "Admin", Description = "Runs the desk." },
 ] };
+
+// A role held only inside an organisation is given only there — `HeldIn = RoleScope.Organization` on its RoleChoice.
 
 // The role the app must never be left without an active holder of.
 app.People = new PeopleSetup { KeepOneOf = AppRole.Admin };

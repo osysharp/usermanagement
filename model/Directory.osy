@@ -105,6 +105,8 @@ public class HeldRole {
   /// The organisation it is held in — "" for an app role.
   public string Organization = "";
   public Guid? OrganizationId;
+  /// Whether a page may take it away — false for a role the app lists `Grantable = false` (it is named, never handed out).
+  public bool Removable = true;
 }
 
 /// One line of a person's access history.
@@ -152,14 +154,14 @@ public PersonDetail PersonDetailOf(Guid id) {
   }
   foreach (var g in RoleGrant.Where(x => x.Member == p).ToList()) {
     var label = RoleLabel(g.Role);
-    if (label != "") { d.Roles.Add(new HeldRole { Role = g.Role, Label = label }); }
+    if (label != "") { d.Roles.Add(new HeldRole { Role = g.Role, Label = label, Removable = IsOfferedRole(g.Role, RoleScope.App) }); }
   }
   foreach (var r in MembershipRole.Where(x => x.Membership.Member == p && x.Membership.IsActive).Include(x => x.Membership.Organization).ToList()) {
     var label = RoleLabel(r.Role);
     d.Roles.Add(new HeldRole { Role = r.Role, Label = label != "" ? label : "Member",
                                Organization = r.Membership.Organization.Name, OrganizationId = r.Membership.Organization.Id });
   }
-  foreach (var o in OfferedRoles()) {
+  foreach (var o in OfferedRoles(RoleScope.App)) {
     if (o.Role == null) { continue; }
     var held = false;
     foreach (var h in d.Roles) { if (h.Organization == "" && h.Role != null && h.Role.Value == o.Role.Value) { held = true; } }

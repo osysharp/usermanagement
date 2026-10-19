@@ -218,3 +218,22 @@ void organisation_access_is_changed_and_recorded_the_same_way() {
   // A team Ada cannot read is refused before the call runs — as not found, which says nothing about whether it exists.
   runas (Ada) { Assert.Throws<NotFoundException>(() => AddToOrganization(billing!, Ada)); }
 }
+
+// ── A role is given where the app says it may be held (`RoleChoice.HeldIn`): a team-only role never across the app,
+//    and it is not offered as an app-wide grant on a person's page.
+[Test(Team)]
+void a_role_held_only_inside_an_organisation_is_never_given_across_the_app() {
+  var mo = Person("mo@desk.test");
+  Team? billing = null;
+  runas (Sam) { billing = Team.Single(t => t.Name == "Billing"); }
+  runas (Sam) {
+    var refused = Assert.Throws(() => GrantRole(mo, AppRole.TeamLead, "trying it app-wide"));
+    Assert.Contains("held only inside an organisation", refused.Message);
+  }
+  runas (Sam) { AddToOrganization(billing!, mo); }
+  runas (Sam) { GrantInOrganization(billing!, mo, AppRole.TeamLead, "leads billing"); }
+  runas (Sam) {
+    Assert.True(HoldsIn(mo, billing!, AppRole.TeamLead));
+    Assert.False(RoleGrant.Any(g => g.Member == mo && g.Role == AppRole.TeamLead));
+  }
+}

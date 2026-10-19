@@ -62,7 +62,7 @@ public component ApiKeyManager() {
     integrations = IntegrationLines();
   }
   action StartAdd() {
-    roles = OfferedRoles().Where(o => o.Role != null).ToList();
+    roles = OfferedRoles(RoleScope.App).Where(o => o.Role != null).ToList();
     integrationName = ""; integrationRole = null; addProblem = ""; adding = true;
   }
   action StopAdd() { adding = false; }
@@ -169,7 +169,7 @@ public component ApiKeyManager() {
         }
       }
       SettingsSection("Keys in use", description: "Each acts as its holder and nobody else. Revoke one and the next request that presents it is refused; deactivating a person revokes theirs.") {
-        Stack(gap: 0, role: UiRole.List, label: "Keys in use") {
+        Stack(gap: 0, role: (lines.Count == 0) ? UiRole.Group : UiRole.List, label: "Keys in use") {
           if (lines.Count == 0) {
             EmptyState(revoked.Count > 0 ? "No keys in use" : "No keys yet", body: "Issue one to let a program call this app's API as somebody on the team.");
           }
@@ -178,7 +178,7 @@ public component ApiKeyManager() {
         Row(gap: 2) { Button("Issue a key", onPress: StartIssue, tone: Tone.Primary, size: Size.Sm); }
       }
       SettingsSection("Integrations", description: "A program that works with the app under its own name — what it does is recorded as its own, never as a teammate's. It holds keys and a role, and can never sign in. Switch it off and every key it holds stops working.") {
-        Stack(gap: 0, role: UiRole.List, label: "Integrations") {
+        Stack(gap: 0, role: (integrations.Count == 0) ? UiRole.Group : UiRole.List, label: "Integrations") {
           if (integrations.Count == 0) {
             EmptyState("No integrations yet", body: "Add one for each program that calls the app — Zapier, a nightly export, a partner's system.");
           }

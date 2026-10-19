@@ -158,6 +158,14 @@ public string AccessProblem(Principal person, Principal by, AccessChangeKind kin
        || kind == AccessChangeKind.IntegrationAdded) && !IsOfferedRole(r!.Value)) {
     return "That role is not one this app hands out.";
   }
+  // A role is given where the app says it may be held (`RoleChoice.HeldIn`): one held only inside an organisation is
+  // never given across the app, and an app-wide one never inside an organisation.
+  if ((kind == AccessChangeKind.RoleGranted || kind == AccessChangeKind.IntegrationAdded) && !IsOfferedRole(r!.Value, RoleScope.App)) {
+    return "That role is held only inside an organisation — give it from the organisation's people.";
+  }
+  if (kind == AccessChangeKind.OrganizationRoleGranted && !IsOfferedRole(r!.Value, RoleScope.Organization)) {
+    return "That role is held across the app, not inside an organisation.";
+  }
   if (kind == AccessChangeKind.IntegrationAdded || kind == AccessChangeKind.IntegrationReassigned) {
     // `person` is who answers for it — somebody who is here, and a person.
     if (person is Integration) { return "An integration is answered for by a person — choose who owns it."; }

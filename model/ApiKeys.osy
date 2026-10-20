@@ -177,10 +177,12 @@ public List<ApiKeyLine> ApiKeyLines(DateTime now, bool withRevoked = false) {
 
 /// Who a key can be issued to — the people list's active people and the active integrations, by name.
 public List<Principal> KeyHolders() {
-  var listed = App.Setting<PeopleSetup>().Directory.Listed();
+  var directory = App.Setting<PeopleSetup>().Directory;
+  var listed = directory.Listed();
+  var hidden = directory.Hidden();
   var people = listed != null
-    ? listed.Where(p => p.IsActive).OrderBy(p => p.DisplayName).Take(PeopleShown()).ToList()
-    : Everybody("", false);
+    ? listed.Where(p => p.IsActive && !hidden.Contains(p.Id)).OrderBy(p => p.DisplayName).Take(PeopleShown()).ToList()
+    : Everybody("", false, hidden);
   var ids = people.Select(p => p.Id).ToList();
   // The integrations as well, whoever the directory lists — a program is not a person on the list, and takes keys.
   foreach (var i in Integration.Where(x => x.IsActive && !ids.Contains(x.Id)).OrderBy(x => x.DisplayName).Take(PeopleShown()).ToList()) {

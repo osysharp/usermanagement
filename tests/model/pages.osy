@@ -8,6 +8,10 @@ component Home() { render { Text("Welcome to the desk"); } }
 [Route("/people")] [Authorize(ManagesPeople)] [Render(CSR)] [Title("People")]
 component PeoplePage() { render { PeopleManager(canInvite: MayInvite); } }
 
+/// The people alone — an app that lists its waiting invitations on a page of their own.
+[Route("/people/only")] [Authorize(ManagesPeople)] [Render(CSR)] [Title("People")]
+component PeopleOnlyPage() { render { PeopleManager(canInvite: MayInvite, invitations: false); } }
+
 [Route("/people/keys")] [Authorize(ManagesPeople)] [Render(CSR)] [Title("API keys")]
 component KeysPage() { render { ApiKeyManager(); } }
 

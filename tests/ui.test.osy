@@ -105,6 +105,22 @@ void inviting_from_the_people_page_lists_the_invitation_as_waiting() {
   Assert.Visible("nina@desk.test", within: "Waiting invitations");
 }
 
+// `PeopleManager(invitations: false)` — the people alone, for an app that lists its waiting invitations on a tab of their
+// own (Admin's /principals). The invite form stays; the waiting list does not.
+[Test(Office)]
+void the_people_manager_leaves_the_waiting_invitations_out_when_asked() {
+  runas (Sam) { Invite("nina@desk.test", AppRole.Agent); }
+  UnitOfWork.Commit();
+  Ui.SignInAs(Sam);
+  Ui.Visit("/people/only");
+  Assert.Visible("Mo Haddad", within: "Everyone");
+  Assert.Visible("Invite someone");
+  Assert.Hidden("Waiting invitations");
+  Assert.Hidden("nina@desk.test");
+  Ui.Visit("/people");
+  Assert.Visible("nina@desk.test", within: "Waiting invitations");
+}
+
 /// A manager issues Ada a key — shown once, with a copy button — finds it in the list with whose it is and that it was
 /// never used, and revokes it.
 [Test(Office)]

@@ -38,11 +38,13 @@ public int PeopleShown() { return 500; }
 /// first `PeopleShown()`; the roles and organisations are read for those people only.
 public List<PersonRow> PeopleList(string search = "", bool includeInactive = true) {
   var q = search.Trim().ToLower();
-  var listed = App.Setting<PeopleSetup>().Directory.Listed();
+  var directory = App.Setting<PeopleSetup>().Directory;
+  var listed = directory.Listed();
+  var hidden = directory.Hidden();
   var people = listed != null
-    ? listed.Where(p => (includeInactive || p.IsActive) && (q == "" || p.Email.ToLower().Contains(q) || p.DisplayName.ToLower().Contains(q)))
+    ? listed.Where(p => !hidden.Contains(p.Id) && (includeInactive || p.IsActive) && (q == "" || p.Email.ToLower().Contains(q) || p.DisplayName.ToLower().Contains(q)))
         .OrderBy(x => x.DisplayName).ThenBy(x => x.Email).Take(PeopleShown()).ToList()
-    : Everybody(q, includeInactive);
+    : Everybody(q, includeInactive, hidden);
   var ids = people.Select(p => p.Id).ToList();
   var grants = PeopleGrantsOf(ids);
   var memberships = PeopleMembershipsOf(ids);
@@ -70,17 +72,18 @@ public List<PersonRow> PeopleList(string search = "", bool includeInactive = tru
   return rows;
 }
 
-/// Everybody with an account whose name or address contains `q` ("" for all), by name — the first `PeopleShown()`.
-List<Principal> Everybody(string q, bool includeInactive) {
+/// Everybody with an account whose name or address contains `q` ("" for all), by name — the first `PeopleShown()` — but
+/// for the accounts `hidden` names, which the database leaves out.
+List<Principal> Everybody(string q, bool includeInactive, List<Guid> hidden) {
   if (q == "") {
     return includeInactive
-      ? Principal.OrderBy(x => x.DisplayName).ThenBy(x => x.Email).Take(PeopleShown()).ToList()
-      : Principal.Where(x => x.IsActive).OrderBy(x => x.DisplayName).ThenBy(x => x.Email).Take(PeopleShown()).ToList();
+      ? Principal.Where(x => !hidden.Contains(x.Id)).OrderBy(x => x.DisplayName).ThenBy(x => x.Email).Take(PeopleShown()).ToList()
+      : Principal.Where(x => x.IsActive && !hidden.Contains(x.Id)).OrderBy(x => x.DisplayName).ThenBy(x => x.Email).Take(PeopleShown()).ToList();
   }
   return includeInactive
-    ? Principal.Where(x => x.Email.ToLower().Contains(q) || x.DisplayName.ToLower().Contains(q))
+    ? Principal.Where(x => !hidden.Contains(x.Id) && (x.Email.ToLower().Contains(q) || x.DisplayName.ToLower().Contains(q)))
         .OrderBy(x => x.DisplayName).ThenBy(x => x.Email).Take(PeopleShown()).ToList()
-    : Principal.Where(x => x.IsActive && (x.Email.ToLower().Contains(q) || x.DisplayName.ToLower().Contains(q)))
+    : Principal.Where(x => x.IsActive && !hidden.Contains(x.Id) && (x.Email.ToLower().Contains(q) || x.DisplayName.ToLower().Contains(q)))
         .OrderBy(x => x.DisplayName).ThenBy(x => x.Email).Take(PeopleShown()).ToList();
 }
 

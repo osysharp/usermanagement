@@ -17,7 +17,7 @@
 //   brings in invitations and organisations — which an app that only signs people in has no use for — and an app's
 //   customers sign in with Accounts without the app needing a user manager at all.
 package Osysharp.UserManagement {
-  version "0.7.0";
+  version "0.8.0";
   minPlatform "0.14.0";
   summary     "the user manager: a searchable people list (roles, two-step sign-in, last sign-in, sessions), and audited access changes — grant and revoke the app's roles, deactivate and reactivate, reset a lost second factor, sign out everywhere, and the same within an organisation; API keys issued once and revoked at once, and integrations — programs that work under their own name with keys and a role and can never sign in — each one a record of who changed whose access, when and why, made only by the app's people managers.";
   model "model/**/*.osy";

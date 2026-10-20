@@ -44,6 +44,10 @@ public class PeopleSetup {
 ///   principal read every customer on every open of the people page, to show the team.
 public class PeopleDirectory {
   public virtual List<Principal>? Listed() { return null; }
+  /// Accounts the list never shows, by id — a few programs that have a page of their own (an app's machine accounts), left
+  /// out by the database while the list goes on searching and taking everybody else a page at a time. Derive and override:
+  ///     public override List<Guid> Hidden() { return Robot.Select(r => r.Account.Id).ToList(); }
+  public virtual List<Guid> Hidden() { return []; }
 }
 
 // ⚠ Appended, never inserted: an enum is stored by position.

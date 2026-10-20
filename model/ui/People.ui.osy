@@ -15,9 +15,10 @@ using Osysharp.Ui;
 
 /// The user manager: search, the people, one person in full beside the list (a screen of its own on a phone), and the
 /// invitations still waiting. `canInvite` is the app's answer to "may this person invite?" (`canInvite: MayInvite`).
+/// `invitations: false` leaves the waiting invitations out, for a page that shows them on their own (`InvitationList`).
 /// In a test: `Ui.Fill("Search people", "ada"); Ui.Click("Ada Lindqvist"); Ui.Click("Sign out everywhere")`.
 [Composable]
-public component PeopleManager(bool canInvite = true) {
+public component PeopleManager(bool canInvite = true, bool invitations = true) {
   string search = "";
   bool showInactive = true;
   List<PersonRow> people = [];
@@ -89,9 +90,11 @@ public component PeopleManager(bool canInvite = true) {
               foreach (var p in people) { PersonListRow(p, p.Id == open, () => Open(p.Id), Layout.AtLeast(Tablet)); }
             }
           }
-          Stack(gap: 2, pt: 2) {
-            Text("Waiting invitations", fontWeight: FontWeight.Semibold);
-            InvitationList(canChange: canInvite);
+          if (invitations) {
+            Stack(gap: 2, pt: 2) {
+              Text("Waiting invitations", fontWeight: FontWeight.Semibold);
+              InvitationList(canChange: canInvite);
+            }
           }
         }
       }

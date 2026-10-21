@@ -87,6 +87,12 @@ List<Principal> Everybody(string q, bool includeInactive, List<Guid> hidden) {
         .OrderBy(x => x.DisplayName).ThenBy(x => x.Email).Take(PeopleShown()).ToList();
 }
 
+/// Everybody with an account whose name or address contains `q` ("" for all), by name, hiding nobody. Kept from 0.7.0, so an
+/// app written against it still compiles.
+List<Principal> Everybody(string q, bool includeInactive) {
+  return Everybody(q, includeInactive, new List<Guid>());
+}
+
 /// The app roles the people `ids` hold.
 [SuppressWarning("cost-unbounded-read")]   // the roles of the people the list already took — PeopleShown() at most
 List<RoleGrant> PeopleGrantsOf(List<Guid> ids) {

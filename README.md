@@ -109,3 +109,119 @@ the reason, and nothing changes:
 
 Resetting a second factor clears the authenticator, the recovery codes and a texted step, mails the person, and signs them
 out: they sign in with their password and set it up again — or, where the app requires it, the sign-in asks them to.
+
+## Examples
+
+Taken from this package's own tests, which compile and run on every release.
+
+```osy
+using Osysharp.Identity;
+using Osysharp.UserAccounts;
+using Osysharp.Organizations;
+using Osysharp.UserManagement;
+using Osysharp.Mail;
+
+[Test(Team)]
+void a_manager_grants_and_revokes_an_offered_role_and_each_change_is_recorded() {
+  var mo = Person("mo@desk.test");
+  runas (Sam) { GrantRole(mo, AppRole.Lead, "Covering the queue in December"); }
+  runas (Mo) { Assert.True(RoleGrant.Any(g => g.Member == Mo && g.Role == AppRole.Lead)); }
+  runas (Sam) { RevokeRole(mo, AppRole.Lead); }
+  runas (Mo) { Assert.False(RoleGrant.Any(g => g.Member == Mo && g.Role == AppRole.Lead)); }
+  runas (Sam) {
+    var trail = AccessChange.Where(c => c.Person == mo).OrderBy(c => c.At).ToList();
+    Assert.Equal(2, trail.Count);
+    Assert.Equal(AccessChangeKind.RoleGranted, trail[0].Kind);
+    Assert.Equal("sam@desk.test", trail[0].By.Email);
+    Assert.Equal("Covering the queue in December", trail[0].Reason);
+    Assert.Equal(AccessChangeKind.RoleRevoked, trail[1].Kind);
+  }
+}
+```
+
+From [`tests/access.test.osy`](tests/access.test.osy).
+
+```osy
+using Osysharp.Identity;
+using Osysharp.UserAccounts;
+using Osysharp.UserManagement;
+
+[Test(Team)]
+void a_key_acts_as_the_person_it_was_issued_to_and_a_revoked_key_is_refused_at_once() {
+  var ada = Person("ada@desk.test");
+  IssuedApiKey issued = new IssuedApiKey();
+  runas (Sam) { issued = IssueApiKey(ada, "Nightly export"); }
+  Assert.StartsWith("pk_", issued.Key);
+  // The key is Ada — not Sam, who issued it.
+  Assert.Contains("ada@desk.test", Me(issued.Key));
+  Assert.DoesNotContain("sam@desk.test", Me(issued.Key));
+  runas (Sam) {
+    var k = ApiKey.Single(x => x.Id == issued.Id);
+    Assert.Equal(1, k.Slot);
+    Assert.Equal("…" + issued.Key.Substring(issued.Key.Length - 4), k.Ending);
+    // Its use is recorded, to the minute.
+    Assert.NotNull(User.Single(u => u.Email == "ada@desk.test").ApiKeyUsedAt);
+    RevokeApiKey(k, "Export moved to the warehouse");
+  }
+  // Refused at the very next request.
+  Assert.Equal("HTTP 401", Me(issued.Key));
+  runas (Sam) {
+    var trail = AccessChange.Where(c => c.Person == ada).OrderBy(c => c.At).ToList();
+    Assert.Equal(AccessChangeKind.ApiKeyIssued, trail[0].Kind);
+    Assert.Equal(AccessChangeKind.ApiKeyRevoked, trail[1].Kind);
+    Assert.Equal("Export moved to the warehouse", trail[1].Reason);
+    Assert.Contains("Revoked the API key “Nightly export”", AccessTrail()[0].What);
+  }
+}
+```
+
+From [`tests/api-keys.test.osy`](tests/api-keys.test.osy).
+
+```osy
+using Osysharp.Identity;
+using Osysharp.UserAccounts;
+using Osysharp.UserManagement;
+
+[Test(Team)]
+void the_integrations_page_reads_the_same_however_many_integrations_there_are() {
+  runas (Sam) {
+    var first = AddIntegration("Program 1", AppRole.Agent, reason: "A test");
+    IssueApiKey(first, "Key 1");
+  }
+  var one = 0;
+  runas (Sam) {
+    var mark = Cost.Mark();
+    IntegrationLines();
+    one = Cost.StatementsSince(mark);
+  }
+  runas (Sam) {
+    for (var i = 2; i <= 6; i++) {
+      var made = AddIntegration("Program " + i, AppRole.Agent, reason: "A test");
+      IssueApiKey(made, "Key " + i);
+    }
+  }
+  runas (Sam) {
+    var mark = Cost.Mark();
+    var lines = IntegrationLines();
+    var six = Cost.StatementsSince(mark);
+    Log.Information("IntegrationLines: " + one + " statements with one integration, " + six + " with six");
+    Assert.Equal(6, lines.Count);
+    Assert.Equal(1, lines.Single(l => l.Name == "Program 6").Keys);
+    Assert.Equal("Agent", lines.Single(l => l.Name == "Program 6").Roles);
+    Assert.Equal(one, six);
+  }
+}
+```
+
+From [`tests/cost.test.osy`](tests/cost.test.osy).
+
+## Learn more
+
+- [The Osysharp.UserManagement reference](https://osysharp.com/reference/security/people-kit/)
+- [Osysharp.UserManagement in the package catalogue](https://osysharp.com/packages/#osysharp-usermanagement)
+- [The Osy# reference](https://osysharp.com/reference/) — the language, the runtime and every kit
+- [`llms-full.txt`](https://osysharp.com/llms-full.txt) — the whole reference and specification as one Markdown file, for a coding agent
+
+## Licence
+
+MIT — see [`LICENSE`](LICENSE).

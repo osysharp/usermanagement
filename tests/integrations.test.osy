@@ -5,6 +5,7 @@
 
 using Osysharp.Identity;
 using Osysharp.UserAccounts;
+using Osysharp.Organizations;
 using Osysharp.UserManagement;
 
 string Caller(string key) {
@@ -191,4 +192,184 @@ void a_people_manager_reassigns_an_integration_whose_owner_left_and_the_trail_re
     Assert.Equal("Ari left — I look after the web form now", trail[0].Reason);
   }
   Assert.Contains("@integrations.invalid", Caller(issued.Key));
+}
+
+// ── AN INTEGRATION HELD IN ONE ORGANISATION — an agent key for one customer: its role is held there (`organization:`),
+//    it holds no app role, and it reads nothing of any other customer — rows, lists, counts, nor what hangs off them.
+// ⛔ SECURITY-INVARIANT(an-integration-added-to-an-organisation-holds-no-app-role).
+
+/// What `GET /entities/T` answers, as far as these tests read it.
+public class EntityPage {
+  public int Total;
+  public bool HasMore;
+}
+
+int Total(ApiResponse r) {
+  Assert.Equal(200, r.StatusCode);
+  return JsonSerializer.Deserialize<EntityPage>(r.Body).Total;
+}
+
+/// Two customers of the desk, each with a ticket and a note on it, and a notice for the app's agents.
+void TwoCustomers() {
+  runas (Sam) {
+    var acme = new Customer { Name = "Acme" };
+    var beta = new Customer { Name = "Beta" };
+    var a = new CustomerTicket { Customer = acme, Title = "Acme printer on fire" };
+    var b = new CustomerTicket { Customer = beta, Title = "Beta invoices missing" };
+    new TicketNote { Ticket = a, Text = "Acme note: toner" };
+    new TicketNote { Ticket = b, Text = "Beta note: ledger" };
+    new DeskNotice { Text = "Rota for December" };
+    UnitOfWork.Commit();
+  }
+}
+
+Customer CustomerNamed(string name) {
+  Customer? found = null;
+  runas (Sam) { found = Customer.Single(c => c.Name == name); }
+  return found!;
+}
+
+CustomerTicket TicketOf(string customer) {
+  CustomerTicket? found = null;
+  runas (Sam) { found = CustomerTicket.Single(t => t.Customer.Name == customer); }
+  return found!;
+}
+
+principal AcmeAgent => Integration.Single(i => i.DisplayName == "Acme feed");
+
+/// The key of an integration added to Acme alone, holding Agent there.
+string AcmeFeedKey() {
+  var acme = CustomerNamed("Acme");
+  string key = "";
+  runas (Sam) {
+    var feed = AddIntegration("Acme feed", AppRole.Agent, organization: acme, reason: "Acme's tickets arrive by API");
+    key = IssueApiKey(feed, "Ticket feed").Key;
+  }
+  return key;
+}
+
+// Held in Acme, it does there what an Agent of Acme does — reads Acme's tickets and files one — over its own key.
+[Test(Team)]
+void an_integration_added_to_one_organisation_acts_with_its_role_there() {
+  TwoCustomers();
+  var key = AcmeFeedKey();
+  var acme = CustomerNamed("Acme");
+  runas (Sam) {
+    var feed = Integration.Single(i => i.DisplayName == "Acme feed");
+    Assert.True(HoldsIn(feed, acme, AppRole.Agent));
+  }
+  var read = Api.Get("/api/rest/v1/team/entities/CustomerTicket", apiKey: key);
+  Assert.Equal(1, Total(read));
+  Assert.Contains("Acme printer on fire", read.Body);
+  var filed = Api.Post("/api/rest/v1/team/entities/CustomerTicket", new { customer = acme.Id, title = "Filed by the feed" }, apiKey: key);
+  Assert.Equal(201, filed.StatusCode);
+  runas (AcmeAgent) {
+    new CustomerTicket { Customer = CustomerTicket.Single(t => t.Title == "Acme printer on fire").Customer, Title = "Filed as itself" };
+    UnitOfWork.Commit();
+  }
+  runas (Sam) {
+    Assert.Equal(3, CustomerTicket.Count(t => t.Customer.Name == "Acme"));
+  }
+}
+
+// ⛔ The wall: a key held in Acme reads NOTHING of Beta — not its row, not its tickets nor their notes, by list, by
+// count, by id or by following a reference — and files nothing there. Its positive twin is the test above.
+[Test(Team)]
+void an_integration_added_to_one_organisation_reads_nothing_of_another() {
+  TwoCustomers();
+  var key = AcmeFeedKey();
+  var beta = CustomerNamed("Beta");
+  var betaTicket = TicketOf("Beta");
+  // Over its key: every list holds Acme's rows and none of Beta's, and its count says so.
+  var customers = Api.Get("/api/rest/v1/team/entities/Customer", apiKey: key);
+  Assert.Equal(1, Total(customers));
+  Assert.DoesNotContain("Beta", customers.Body);
+  var tickets = Api.Get("/api/rest/v1/team/entities/CustomerTicket?$expand=customer", apiKey: key);
+  Assert.Equal(1, Total(tickets));
+  Assert.DoesNotContain("Beta", tickets.Body);
+  var notes = Api.Get("/api/rest/v1/team/entities/TicketNote?$expand=ticket", apiKey: key);
+  Assert.Equal(1, Total(notes));
+  Assert.Contains("Acme note: toner", notes.Body);
+  Assert.DoesNotContain("Beta", notes.Body);
+  // A filter that names Beta finds nothing, and Beta's rows by id are not found — which says nothing of whether they exist.
+  Assert.Equal(0, Total(Api.Get("/api/rest/v1/team/entities/CustomerTicket?$filter=title eq 'Beta invoices missing'", apiKey: key)));
+  Assert.Equal(404, Api.Get("/api/rest/v1/team/entities/Customer/" + beta.Id, apiKey: key).StatusCode);
+  Assert.Equal(404, Api.Get("/api/rest/v1/team/entities/CustomerTicket/" + betaTicket.Id, apiKey: key).StatusCode);
+  // Nor can it file a ticket under Beta.
+  var filed = Api.Post("/api/rest/v1/team/entities/CustomerTicket", new { customer = beta.Id, title = "Into Beta" }, apiKey: key);
+  Assert.False(filed.IsSuccess);
+  // As itself, in the app: no row, count, membership or role of Beta's, and nothing reached through a reference.
+  runas (AcmeAgent) {
+    Assert.Equal(1, Customer.Count());
+    Assert.False(Customer.Any(c => c.Name == "Beta"));
+    // …nor through the kit's base type, which every organisation of every kind is a row of.
+    Assert.Equal(1, Organization.Count());
+    Assert.False(Organization.Any(o => o.Name == "Beta"));
+    Assert.Equal(1, CustomerTicket.Count());
+    Assert.Equal(0, CustomerTicket.Count(t => t.Customer.Name == "Beta"));
+    Assert.Equal(1, TicketNote.Count());
+    Assert.Equal(0, TicketNote.Count(n => n.Ticket.Customer.Name == "Beta"));
+    Assert.False(Membership.Any(m => m.Organization.Name == "Beta"));
+    Assert.Equal(0, MembershipRole.Count(r => r.Membership.Organization.Name == "Beta"));
+    Assert.Denied(() => { new CustomerTicket { Customer = beta, Title = "Into Beta" }; UnitOfWork.Commit(); });
+  }
+  runas (Sam) { Assert.Equal(0, CustomerTicket.Count(t => t.Title == "Into Beta")); }
+}
+
+// ⛔ It holds no app role: what only an app-wide Agent reads (the desk's notices) is not its, while an integration given
+// Agent across the app reads it — so the difference is where the role is held, nothing else.
+[Test(Team)]
+void an_integration_added_to_one_organisation_holds_no_app_role() {
+  TwoCustomers();
+  var acmeKey = AcmeFeedKey();
+  string deskKey = "";
+  runas (Sam) {
+    var desk = AddIntegration("Desk robot", AppRole.Agent);
+    deskKey = IssueApiKey(desk, "Robot").Key;
+    var feed = Integration.Single(i => i.DisplayName == "Acme feed");
+    Assert.Equal(0, RoleGrant.Count(g => g.Member == feed));
+    Assert.Equal(1, Membership.Count(m => m.Member == feed));
+  }
+  Assert.Equal(1, Total(Api.Get("/api/rest/v1/team/entities/DeskNotice", apiKey: deskKey)));
+  Assert.Equal(0, Total(Api.Get("/api/rest/v1/team/entities/DeskNotice", apiKey: acmeKey)));
+  runas (AcmeAgent) { Assert.Equal(0, DeskNotice.Count()); }
+}
+
+// A role goes to an integration only where the app says it is held (`RoleChoice.HeldIn`): an app-wide one never inside
+// an organisation, an organisation's never across the app — refused before anything is recorded. Only a people manager
+// adds one to an organisation.
+[Test(Team)]
+void a_role_is_given_to_an_integration_only_where_the_app_says_it_is_held() {
+  TwoCustomers();
+  var acme = CustomerNamed("Acme");
+  // Ada holds Agent in Acme and reads it — and still may not give Acme an integration: that is a people manager's.
+  runas (Sam) { GrantInOrganization(acme, Person("ada@desk.test"), AppRole.Agent); }
+  runas (Ada) { Assert.Denied(() => AddIntegration("Mine", AppRole.Agent, organization: acme)); }
+  runas (Sam) {
+    Assert.Equal("That role is held across the app, not inside an organisation.",
+                 Assert.Throws<ValidationException>(() => AddIntegration("Acme admin", AppRole.Admin, organization: acme)).Message);
+    Assert.Equal("That role is held only inside an organisation — say which organisation the integration holds it in.",
+                 Assert.Throws<ValidationException>(() => AddIntegration("Team robot", AppRole.TeamLead)).Message);
+    Assert.Equal(0, Integration.Count());
+    Assert.Equal(0, AccessChange.Count(c => c.Kind == AccessChangeKind.IntegrationAdded));
+    var lead = AddIntegration("Acme lead", AppRole.TeamLead, organization: acme);
+    Assert.True(HoldsIn(lead, acme, AppRole.TeamLead));
+    Assert.Equal(0, RoleGrant.Count(g => g.Member == lead));
+  }
+}
+
+// The record names the organisation: the trail and the integrations list say where its role is held.
+[Test(Team)]
+void adding_an_integration_to_an_organisation_is_recorded_naming_it() {
+  TwoCustomers();
+  AcmeFeedKey();
+  runas (Sam) {
+    var added = AccessChange.Single(c => c.Kind == AccessChangeKind.IntegrationAdded);
+    Assert.Equal("Acme", added.Organization!.Name);
+    Assert.Equal("Acme feed", added.Integration!.DisplayName);
+    var trail = AccessTrail();
+    Assert.Equal("Added the integration “Acme feed” as Agent at Acme, owned by Sam", trail[1].What);
+    Assert.Equal("Acme's tickets arrive by API", trail[1].Reason);
+    Assert.Equal("Agent at Acme", IntegrationLines()[0].Roles);
+  }
 }

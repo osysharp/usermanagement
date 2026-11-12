@@ -33,7 +33,7 @@ public component ApiKeysSettings() {
 /// The people, and the changes a person who looks after them makes — the user manager, as a settings page.
 [Route("/settings/people")] [Layout(SettingsFrame)] [Authorize(ManagesPeople)] [Render(CSR)] [Title("People")]
 public component PeopleSettings() {
-  render { PeopleManager(canInvite: MayInvite); }
+  render { PeopleManager(); }
 }
 
 /// Every change to somebody's access, newest first — an auditor's page.

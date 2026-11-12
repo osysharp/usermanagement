@@ -3,8 +3,9 @@
 // like every other admin page. Every colour, face and size is a theme token.
 //
 // ⚑ NO POLICY IS NAMED IN HERE (the kit cannot read the app's `ManagesPeople` in its own code): the app gates the PAGE
-//   these sit on, and passes `canInvite:` from its own policy. A control offered to somebody who may not use it is
-//   refused by the kit's rules, with the reason.
+//   these sit on. Whether to offer an invitation is the app's `MayInvite`, ASKED OF THE SERVER (`MayInvitePeople()`) —
+//   never reflected onto a control, which could read only the caller's own rows — so the app's answer may read any
+//   table. A control offered to somebody who may not use it is refused by the kit's rules, with the reason.
 
 namespace Osysharp.UserManagement;
 
@@ -14,8 +15,9 @@ using Osysharp.Invitations;
 using Osysharp.Ui;
 
 /// The user manager: search, the people, one person in full beside the list (a screen of its own on a phone), and the
-/// invitations still waiting. `canInvite` is the app's answer to "may this person invite?" (`canInvite: MayInvite`).
-/// `invitations: false` leaves the waiting invitations out, for a page that shows them on their own (`InvitationList`).
+/// invitations still waiting. Whether to offer an invitation is the app's `MayInvite`, which the manager asks the server
+/// once (`MayInvitePeople()`) — so the app's policy may read a table. `canInvite: false` leaves inviting out whatever the
+/// policy says (a page that brings people in another way); it never widens it. `invitations: false` leaves the waiting invitations out, for a page that shows them on their own (`InvitationList`).
 /// In a test: `Ui.Fill("Search people", "ada"); Ui.Click("Ada Lindqvist"); Ui.Click("Sign out everywhere")`.
 [Composable]
 public component PeopleManager(bool canInvite = true, bool invitations = true) {
@@ -28,8 +30,11 @@ public component PeopleManager(bool canInvite = true, bool invitations = true) {
   // Whether the list has been read yet. Until it has, the list holds rows' places rather than saying "Nobody matches":
   // a page paints before its reads answer, and an empty list is a claim about the people, not about the wait.
   bool loaded = false;
+  // The server's answer to the app's `MayInvite`, for the caller — false until it is asked, so nothing is offered early.
+  bool mayInvite = false;
+  live var invites = canInvite && mayInvite;
 
-  on mount { people = PeopleList(); loaded = true; }
+  on mount { if (canInvite) { mayInvite = MayInvitePeople(); } people = PeopleList(); loaded = true; }
 
   action Find() { people = PeopleList(search, showInactive); }
   action Open(Guid id) { detail = PersonDetailOf(id); open = id; }
@@ -44,7 +49,7 @@ public component PeopleManager(bool canInvite = true, bool invitations = true) {
       if (open == Guid.Empty || Layout.AtLeast(Laptop)) {
         Stack(gap: 4, grow: 1, minW: "0", maxW: "1120px", p: 5) {
           PageHead("People", subtitle: "Who works here, what each may do, and who changed it.") {
-            if (canInvite) { Button("Invite someone", onPress: StartInvite, tone: Tone.Primary, shortcut: "I"); }
+            if (invites) { Button("Invite someone", onPress: StartInvite, tone: Tone.Primary, shortcut: "I"); }
           }
           // ── the list: a dense table on its own surface, its toolbar above it ──────────────────────────────────
           // ⚑ THE SWITCHBOARD FLOOR'S DENSE LIST (the helpdesk queue's): a compact filter rather than a page-wide
@@ -93,7 +98,7 @@ public component PeopleManager(bool canInvite = true, bool invitations = true) {
           if (invitations) {
             Stack(gap: 2, pt: 2) {
               Text("Waiting invitations", fontWeight: FontWeight.Semibold);
-              InvitationList(canChange: canInvite);
+              InvitationList(canChange: invites);
             }
           }
         }
@@ -107,7 +112,7 @@ public component PeopleManager(bool canInvite = true, bool invitations = true) {
     }
     if (inviting) {
       Dialog("Invite someone", onDismiss: StopInvite, subtitle: "They get a link by mail, and join with the role you choose.") {
-        InviteForm(onSent: Invited, canSend: canInvite);
+        InviteForm(onSent: Invited, canSend: invites);
       }
     }
   }

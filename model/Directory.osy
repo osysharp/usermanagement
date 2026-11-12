@@ -34,6 +34,12 @@ public class PersonRow {
 /// How many people the list shows at most — the first by name; a search narrows it.
 public int PeopleShown() { return 500; }
 
+/// Whether the signed-in person may invite somebody — the app's `MayInvite`, answered on the SERVER, for the caller
+/// alone. The people page asks it once, so the app's answer may read any table it likes (a role's permissions kept as
+/// rows); a policy reflected onto a control could read only the caller's own rows. It only decides whether the invite
+/// control is SHOWN: sending, revoking and resending are refused by the Invitations kit's rules whatever it said.
+public bool MayInvitePeople() { return MayInvite; }
+
 /// Everybody the directory lists, or those whose name or address contains `search`, by name — with what each holds. The
 /// first `PeopleShown()`; the roles and organisations are read for those people only.
 public List<PersonRow> PeopleList(string search = "", bool includeInactive = true) {
@@ -200,6 +206,7 @@ public string Describe(AccessChange c) {
   if (c.Kind == AccessChangeKind.LeftOrganization) { return "Removed from " + org; }
   if (c.Kind == AccessChangeKind.ApiKeyIssued && c.Key != null) { return $"Issued the API key “{c.Key!.Name}” {c.Key!.Ending}"; }
   if (c.Kind == AccessChangeKind.ApiKeyRevoked && c.Key != null) { return $"Revoked the API key “{c.Key!.Name}” {c.Key!.Ending}"; }
+  if (c.Kind == AccessChangeKind.IntegrationAdded && org != "") { return $"Added the integration “{c.IntegrationName ?? ""}” as {role} at {org}"; }
   if (c.Kind == AccessChangeKind.IntegrationAdded) { return $"Added the integration “{c.IntegrationName ?? ""}” as {role}"; }
   if (c.Kind == AccessChangeKind.IntegrationReassigned) { return $"Became the owner of the integration “{c.IntegrationName ?? ""}”"; }
   return c.Kind.Label;

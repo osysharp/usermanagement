@@ -1,0 +1,72 @@
+// Who is offered an invitation is the app's `MayInvite` — here a permission kept as a ROW (`RolePermission`), not a role
+// the caller holds. The people manager asks the server for it, so a policy that reads a table works; and the invite
+// itself is refused by the Invitations kit's rules whatever a page offered.
+
+using Osysharp.Identity;
+using Osysharp.UserAccounts;
+using Osysharp.UserManagement;
+using Osysharp.Invitations;
+
+[TestFixture]
+void Leads() {
+  var sam = new User { Email = "sam@desk.test", DisplayName = "Sam Okafor", PasswordHash = Security.HashPassword("correct-horse-1"),
+                       EmailVerifiedAt = DateTime.UtcNow, LastLoginAt = DateTime.UtcNow };
+  new RoleGrant { Member = sam, Role = AppRole.Admin };
+  var lou = new User { Email = "lou@desk.test", DisplayName = "Lou Persson", PasswordHash = Security.HashPassword("correct-horse-2"),
+                       EmailVerifiedAt = DateTime.UtcNow, LastLoginAt = DateTime.UtcNow };
+  new RoleGrant { Member = lou, Role = AppRole.Lead };
+  new User { Email = "mo.haddad@desk.test", DisplayName = "Mo Haddad", PasswordHash = Security.HashPassword("correct-horse-3"),
+             EmailVerifiedAt = DateTime.UtcNow };
+}
+
+principal Sam => User.Single(u => u.Email == "sam@desk.test");
+principal Lou => User.Single(u => u.Email == "lou@desk.test");
+
+[Test(Leads)]
+void a_lead_is_offered_the_invite_once_their_role_holds_the_permission_as_a_row_and_not_before() {
+  Ui.SignInAs(Lou);
+  Ui.Visit("/people/leads");
+  Assert.Visible("Mo Haddad", within: "Everyone");
+  Assert.Hidden("Invite someone");
+  Ui.SignOut();
+
+  runas (Sam) { new RolePermission { Role = AppRole.Lead, Permission = Permission.InvitePeople }; }
+  UnitOfWork.Commit();
+
+  Ui.SignInAs(Lou);
+  Ui.Visit("/people/leads");
+  Assert.Visible("Mo Haddad", within: "Everyone");
+  Assert.Visible("Invite someone");
+}
+
+[Test(Leads)]
+void the_invite_itself_refuses_a_lead_whose_role_lacks_the_permission_and_sends_once_it_holds_it() {
+  runas (Lou) { Assert.Throws(() => Invite("nina@desk.test", AppRole.Agent)); }
+  runas (Sam) { Assert.Equal(0, Invitation.Count(i => i.Email == "nina@desk.test")); }
+
+  runas (Sam) { new RolePermission { Role = AppRole.Lead, Permission = Permission.InvitePeople }; }
+  UnitOfWork.Commit();
+
+  runas (Lou) { Invite("nina@desk.test", AppRole.Agent); }
+  UnitOfWork.Commit();
+  runas (Sam) { Assert.Equal(1, Invitation.Count(i => i.Email == "nina@desk.test")); }
+}
+
+[Test(Leads)]
+void an_app_passing_can_invite_from_a_role_check_is_offered_it_as_before_and_it_never_widens_may_invite() {
+  // The lead's role holds the permission, so the app's `MayInvite` says yes for them — but this page passes
+  // `canInvite: IsAdmin`, and an app's `canInvite:` only ever narrows.
+  runas (Sam) { new RolePermission { Role = AppRole.Lead, Permission = Permission.InvitePeople }; }
+  UnitOfWork.Commit();
+
+  Ui.SignInAs(Sam);
+  Ui.Visit("/people/by-role");
+  Assert.Visible("Mo Haddad", within: "Everyone");
+  Assert.Visible("Invite someone");
+  Ui.SignOut();
+
+  Ui.SignInAs(Lou);
+  Ui.Visit("/people/by-role");
+  Assert.Visible("Mo Haddad", within: "Everyone");
+  Assert.Hidden("Invite someone");
+}

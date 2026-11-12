@@ -50,6 +50,13 @@ partial entity RoleGrant { security { allow read when ManagesPeople; } }
 Then put `PeopleManager()` on a page only managers reach (it is a `[Composable]`; it brings the invite form and the
 waiting invitations with it).
 
+Who is offered the invite is `MayInvite`, which the manager asks the SERVER once (`MayInvitePeople()`) — so it may read
+any table, e.g. a role's permissions kept as rows:
+`policy MayInvite => RoleGrant.Any(g => g.Member == user && RolePermission.Any(p => p.Role == g.Role && p.Permission == Permission.Invite));`.
+Write `PeopleManager()` — not `PeopleManager(canInvite: MayInvite)`, which hands the policy to a control and so allows
+only a check on the caller's own rows. `canInvite: false` leaves inviting out; it never widens what `MayInvite` says. The
+invite itself is refused by the Invitations kit's rules whatever a page offered.
+
 From code: `GrantRole(p, AppRole.Lead, "covering December")`, `RevokeRole`, `Deactivate(p, "left")`, `Reactivate`,
 `ResetSecondFactor(p, "lost phone — confirmed by a call")`, `SignOutEverywhere(p)`, `AddToOrganization(org, p)`,
 `GrantInOrganization(org, p, AppRole.Lead)`; reads `PeopleList(search)`, `PersonDetailOf(id)`, `AccessTrail()`.
@@ -78,6 +85,12 @@ A people manager adds one on the same page — a name and what it may do — and
 with its role, its owner and how many keys it holds; **Switch off** deactivates it, and every key it holds is refused
 from the next request. Adding one is an access change on the trail, like any other. From code:
 `AddIntegration("Zapier", AppRole.Agent)` then `IssueApiKey(zapier, "Web form").Key`.
+
+An integration can also work for **one organisation** only — an agent key for one customer, one team, one product.
+`AddIntegration("Acme feed", AppRole.Agent, organization: acme)` gives it the role inside Acme and no role across the
+app, so its key reads what Acme's members read and nothing of any other organisation. A role is given only where the
+app says it is held (`RoleChoice.HeldIn`): an app-wide role is refused inside an organisation, and an organisation's
+role is refused without one. The trail reads *Added the integration “Acme feed” as Agent at Acme*.
 
 An integration outlives the person who answers for it. When they leave and their account is deactivated, the program
 keeps working, and its row says **Owner deactivated**. **Reassign** gives it to somebody who is here, with a reason, as

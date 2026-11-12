@@ -1,6 +1,7 @@
 namespace Osysharp.UserManagement;
 
 using Osysharp.Identity;
+using Osysharp.Organizations;
 
 // INTEGRATIONS — a program the app is used BY: Zapier, a nightly export, a partner's system. It is an account of its own,
 // with a name, a person who answers for it, the roles it was given, and API keys — and nothing a person has: no mailbox,
@@ -10,6 +11,11 @@ using Osysharp.Identity;
 // ⚑ ADDED LIKE ANY OTHER CHANGE TO ACCESS. A people manager records an `AccessChange` (`IntegrationAdded`) naming it, its
 //   role and its owner; the change's run makes the account and grants the role in the same commit. Its keys are issued
 //   and revoked as everybody's are (`IssueApiKey`, `RevokeApiKey`), and deactivating it (`Deactivate`) revokes them all.
+//
+// ⚑ HELD ACROSS THE APP, OR IN ONE ORGANISATION. Without `organization:` its role is an app role (a `RoleGrant`). With it,
+//   the role is held in that organisation alone (a membership there and its `MembershipRole`) and the integration holds
+//   no app role at all — an agent key for one customer, one team, one product, which reads only what that
+//   organisation's members read. A role is given only where the app says it may be held (`RoleChoice.HeldIn`).
 //
 // ⚑ IT OUTLIVES ITS OWNER. Deactivating the person who answers for it ends their sessions and their keys, never the
 //   integration's: a program the team depends on does not stop because somebody left. The page says "owner deactivated",
@@ -43,19 +49,31 @@ string NewIntegrationAddress() {
   return "integration-" + Security.RandomHex(12) + "@integrations.invalid";
 }
 
-/// Add an integration called `name`, holding the app role `r` (one the app offers), answered for by `owner` (the caller
-/// when not given). Answers the integration — issue it a key next (`IssueApiKey`). Committed.
-public Integration AddIntegration(string name, role r, Principal? owner = null, string reason = "") {
+/// Add an integration called `name`, holding the role `r` (one the app offers), answered for by `owner` (the caller when
+/// not given). Without `organization` the role is held across the app; with it, the role is held in `organization` alone
+/// and the integration holds no app role. Answers the integration — issue it a key next (`IssueApiKey`). Committed.
+///
+/// SECURITY-INVARIANT(an-integration-added-to-an-organisation-holds-no-app-role): an integration added with
+/// `organization:` is given its role as a `MembershipRole` in that organisation and NOTHING ELSE — no `RoleGrant`, no
+/// membership anywhere else — so a key it holds reads only what that organisation's members read; and a role is given
+/// only where the app offers it to be held (`RoleChoice.HeldIn`): an app-wide role never inside an organisation, an
+/// organisation's role never across the app. Guarded by tests/integrations.test.osy
+/// (`an_integration_added_to_one_organisation_acts_with_its_role_there`,
+/// `an_integration_added_to_one_organisation_reads_nothing_of_another`,
+/// `an_integration_added_to_one_organisation_holds_no_app_role`,
+/// `a_role_is_given_to_an_integration_only_where_the_app_says_it_is_held`).
+public Integration AddIntegration(string name, role r, Principal? owner = null, string reason = "", Organization? organization = null) {
   var me = Session.CurrentUser;
   if (me == null) { throw new NotAuthorized("Sign in to add an integration."); }
   var shown = name.Trim();
   if (shown == "") { throw new ValidationException("Name the integration — what it is, as you will recognise it in the list: “Zapier”."); }
   if (shown.Length > 100) { throw new ValidationException("Keep the name under 100 characters — it is what every record it makes is filed under."); }
   var answers = owner ?? me!;
-  var problem = AccessProblem(answers, me!, AccessChangeKind.IntegrationAdded, r, null, reason);
+  var problem = AccessProblem(answers, me!, AccessChangeKind.IntegrationAdded, r, organization, reason);
   if (problem != "") { throw new ValidationException(problem); }
   var made = new AccessChange { Person = answers, By = me!, Kind = AccessChangeKind.IntegrationAdded, Role = r,
-                                IntegrationName = shown, Reason = reason.Trim(), At = DateTime.UtcNow };
+                                Organization = organization, IntegrationName = shown, Reason = reason.Trim(),
+                                At = DateTime.UtcNow };
   UnitOfWork.Commit();
   ThrowIfRefused(made.Id, "The integration was not added.");
   return AccessChange.Single(c => c.Id == made.Id).Integration!;
@@ -85,13 +103,18 @@ string ReassignProblem(Integration? integration, Principal owner) {
   return "";
 }
 
-/// Make the integration a change names, give it its role, and tell the app the role was given (as the system — its run).
+/// Make the integration a change names and give it its role (as the system — its run): in the change's organisation when
+/// it names one, and then nothing across the app; else across the app, telling the app the role was given.
 void MakeIntegration(AccessChange change) {
   var r = change.Role!.Value;
   var made = new Integration { Email = NewIntegrationAddress(), DisplayName = change.IntegrationName ?? "Integration",
                                Owner = change.Person, IsActive = true, Source = IdentitySource.Local };
-  new RoleGrant { Member = made, Role = r };
   change.Integration = made;
+  if (change.Organization != null) {
+    GrantIn(change.Organization!, made, r);
+    return;
+  }
+  new RoleGrant { Member = made, Role = r };
   App.Setting<RolesSetup>().Events.Granted(made, r);
 }
 
@@ -117,6 +140,7 @@ public List<IntegrationLine> IntegrationLines(bool withInactive = false) {
   // Their roles and live keys read once for the page, not once per integration.
   var ids = integrations.Select(i => i.Id).ToList();
   var grants = PeopleGrantsOf(ids);
+  var held = OrganizationRolesOf(ids);
   var keys = new Dictionary<Guid, int>();
   if (ids.Count > 0) {
     foreach (var k in ApiKey.Where(k => ids.Contains(k.Holder.Id) && k.Slot > 0 && k.RevokedAt == null)
@@ -130,10 +154,23 @@ public List<IntegrationLine> IntegrationLines(bool withInactive = false) {
       var label = RoleLabel(g.Role);
       if (label != "") { roles.Add(label); }
     }
+    // One held in an organisation is named with it — "Planner at Beta" — never as though it were held across the app.
+    foreach (var h in held.Where(x => x.Membership.Member.Id == i.Id)) {
+      var label = RoleLabel(h.Role);
+      if (label != "") { roles.Add(label + " at " + h.Membership.Organization.Name); }
+    }
     lines.Add(new IntegrationLine { Id = i.Id, Name = i.DisplayName, Owner = NameOf(i.Owner), OwnerActive = i.Owner.IsActive, Roles = string.Join(", ", roles),
       Active = i.IsActive, Keys = keys.ContainsKey(i.Id) ? keys[i.Id] : 0 });
   }
   return lines.OrderBy(l => l.Active ? 0 : 1).ToList();
+}
+
+/// The roles the accounts `ids` hold inside an organisation they are an active member of, with the organisation.
+[SuppressWarning("cost-unbounded-read")]   // the organisation roles of the integrations the list already took — 200 at most
+List<MembershipRole> OrganizationRolesOf(List<Guid> ids) {
+  if (ids.Count == 0) { return []; }
+  return MembershipRole.Where(x => ids.Contains(x.Membership.Member.Id) && x.Membership.IsActive)
+    .Include(x => x.Membership.Organization).Include(x => x.Membership.Member).ToList();
 }
 
 /// How many live keys one integration holds — a row of `IntegrationLines`' grouped count.

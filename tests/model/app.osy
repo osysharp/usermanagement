@@ -8,7 +8,23 @@ using Osysharp.UserManagement;
 
 policy IsAdmin => RoleGrant.Any(g => g.Member == user && g.Role == AppRole.Admin);
 policy ManagesPeople => IsAdmin;
-policy MayInvite => IsAdmin;
+// Who invites comes from a TABLE — a role's permissions, kept as rows — not only from a role the caller holds. The kit
+// asks the server for the answer (`MayInvitePeople()`), so a policy that reads a table works where a control needs it.
+policy MayInvite => IsAdmin || RoleGrant.Any(g => g.Member == user && RolePermission.Any(p => p.Role == g.Role && p.Permission == Permission.InvitePeople));
+
+policy IsLead => RoleGrant.Any(g => g.Member == user && g.Role == AppRole.Lead);
+/// Who reaches the leads' people page — the admins, and the leads.
+policy SeesPeople => IsAdmin || IsLead;
+
+/// What a role may do beyond what the role itself says — a permission handed to a role as a row.
+enum Permission { InvitePeople }
+
+/// One permission held by one role. Every signed-in person reads them (they say what a role means); admins change them.
+entity RolePermission {
+  AppRole Role;
+  Permission Permission;
+  security { allow read when IsAuthenticated; allow create, update, delete when IsAdmin; }
+}
 policy ManagesOrganizations => IsAdmin;
 
 app.Accounts = new AccountsSetup { AppName = "People Desk", SignupOpen = false, SecondFactor = new AdminsUseCodes() };
@@ -17,7 +33,8 @@ app.Accounts = new AccountsSetup { AppName = "People Desk", SignupOpen = false, 
 app.Roles = new RolesSetup { Offered = [
   new RoleChoice { Role = AppRole.Agent, Label = "Agent", Description = "Works the desk." },
   new RoleChoice { Role = AppRole.Lead, Label = "Lead", Description = "Watches the queues." },
-  new RoleChoice { Role = AppRole.Admin, Label = "Admin", Description = "Runs the desk." },
+  // Held across the app only — never inside a team or a customer.
+  new RoleChoice { Role = AppRole.Admin, Label = "Admin", Description = "Runs the desk.", HeldIn = RoleScope.App },
   // Held only inside a team — never an app-wide role (`RoleChoice.HeldIn`).
   new RoleChoice { Role = AppRole.TeamLead, Label = "Team lead", Description = "Leads one team.", HeldIn = RoleScope.Organization },
 ] };
@@ -37,6 +54,13 @@ app.Apis = [
     Route = "team",
     Auth = new ApiAuth { ApiKey = true },
     Endpoints = [ new Endpoint(WhoAmI) { Method = HttpMethod.Get, Path = "/me" } ],
+    // A customer's rows, as a key held in one customer reads them (tests/integrations.test.osy).
+    Expose = [
+      new Crud<Customer>() { Operations = [CrudOp.Read] },
+      new Crud<CustomerTicket>() { Operations = [CrudOp.Read, CrudOp.Create] },
+      new Crud<TicketNote>() { Operations = [CrudOp.Read] },
+      new Crud<DeskNotice>() { Operations = [CrudOp.Read] },
+    ],
   },
 ];
 
@@ -46,4 +70,47 @@ public string WhoAmI() { return Session.CurrentUser == null ? "" : Session.Curre
 /// A team of the app's own people.
 entity Team : Organization {
   security { allow read, create, update when IsAdmin; }
+}
+
+// ── a customer's own rows — the tenant shape the Organizations kit recommends: every row names its customer, and its
+//    members read it (`IsMemberOf`), holders of a role there write it (`HoldsRoleIn`). ────────────────────────────────
+
+policy IsAgent => RoleGrant.Any(g => g.Member == user && g.Role == AppRole.Agent);
+
+/// A customer of the desk. Its own people — and an integration added to it — read it; nobody else but the admins.
+entity Customer : Organization {
+  security {
+    allow read, create, update when IsAdmin;
+    allow read when IsAuthenticated where IsMemberOf(this);
+  }
+}
+
+/// A ticket filed under one customer: read by its members, filed by an agent of that customer.
+entity CustomerTicket {
+  [Required, Immutable] Customer Customer;
+  [MaxLength(200)] string Title = "";
+  security {
+    allow read, create when IsAdmin;
+    allow read when IsAuthenticated where IsMemberOf(Customer);
+    allow create when IsAuthenticated where HoldsRoleIn(Customer, AppRole.Agent);
+  }
+}
+
+/// A note on a ticket — reached only through it, so read as its ticket's customer says.
+entity TicketNote {
+  [Required, Immutable] CustomerTicket Ticket;
+  [MaxLength(500)] string Text = "";
+  security {
+    allow read, create when IsAdmin;
+    allow read when IsAuthenticated where IsMemberOf(Ticket.Customer);
+  }
+}
+
+/// A notice for the desk's agents across the app — what only an APP-wide Agent reads.
+entity DeskNotice {
+  [MaxLength(200)] string Text = "";
+  security {
+    allow read, create when IsAdmin;
+    allow read when IsAgent;
+  }
 }

@@ -6,11 +6,20 @@ using Osysharp.Invitations;
 component Home() { render { Text("Welcome to the desk"); } }
 
 [Route("/people")] [Authorize(ManagesPeople)] [Render(CSR)] [Title("People")]
-component PeoplePage() { render { PeopleManager(canInvite: MayInvite); } }
+component PeoplePage() { render { PeopleManager(); } }
+
+/// The people as the leads reach them too — who is offered the invite is the app's `MayInvite`, which reads a table.
+[Route("/people/leads")] [Authorize(SeesPeople)] [Render(CSR)] [Title("People")]
+component LeadsPeoplePage() { render { PeopleManager(); } }
+
+/// The form an app wrote before the kit asked the server: `canInvite:` from a policy on the caller's own rows. It still
+/// compiles, and it can only narrow what the app's `MayInvite` offers.
+[Route("/people/by-role")] [Authorize(SeesPeople)] [Render(CSR)] [Title("People")]
+component ByRolePeoplePage() { render { PeopleManager(canInvite: IsAdmin); } }
 
 /// The people alone — an app that lists its waiting invitations on a page of their own.
 [Route("/people/only")] [Authorize(ManagesPeople)] [Render(CSR)] [Title("People")]
-component PeopleOnlyPage() { render { PeopleManager(canInvite: MayInvite, invitations: false); } }
+component PeopleOnlyPage() { render { PeopleManager(invitations: false); } }
 
 [Route("/people/keys")] [Authorize(ManagesPeople)] [Render(CSR)] [Title("API keys")]
 component KeysPage() { render { ApiKeyManager(); } }

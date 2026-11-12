@@ -55,8 +55,10 @@ void a_persons_detail_offers_only_the_roles_they_do_not_hold_and_shows_their_his
     Assert.True(d.SecondFactorOn);
     Assert.False(d.SecondFactorRequired);
     Assert.Equal(2, d.Roles.Count);
-    Assert.Equal(1, d.Grantable.Count);
+    // Every offered app role she does not hold — Admin, and the four tests/app-rules.test.osy's rules are about.
+    Assert.Equal(5, d.Grantable.Count);
     Assert.Equal("Admin", d.Grantable[0].Label);
+    Assert.False(d.Grantable.Any(g => g.Label == "Agent" || g.Label == "Lead"));
     Assert.Equal(1, d.History.Count);
     Assert.Equal("Granted Lead", d.History[0].What);
     Assert.Equal("Sam Admin", d.History[0].By);

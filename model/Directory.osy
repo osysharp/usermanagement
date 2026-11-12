@@ -124,12 +124,31 @@ public class HeldRole {
   public bool Removable = true;
 }
 
-/// One line of a person's access history.
+/// One app role a manager can give a person, as "Add role" lists it — every role the app offers across the app, with
+/// whether the person already holds it.
+public class RoleOffer {
+  public role? Role = null;
+  public string Label = "";
+  public string Description = "";
+  public bool Held = false;
+}
+
+/// One line of a person's access history, or of the app-wide trail.
 public class AccessEvent {
+  /// The record it reads from — the `AccessChange`, or the invitation somebody joined by. What a table's row is known by.
+  public Guid Id;
   public DateTime At;
+  /// The change in one sentence, the person included on the app-wide trail ("Granted Lead — Mo Haddad").
   public string What = "";
   public string By = "";
   public string Reason = "";
+  /// The change alone ("Granted Lead") — the trail's "What" column, beside who it concerns.
+  public string Change = "";
+  /// Who it concerns — the person whose access it is; for an integration, who answers for it.
+  public string Person = "";
+  /// It was asked for and NOT made: a rule refused it, and `Refusal` says which.
+  public bool Refused = false;
+  public string Refusal = "";
 }
 
 /// One person in full — for the user manager's detail.
@@ -144,12 +163,16 @@ public class PersonDetail {
   /// Whether the app requires two-step sign-in of them.
   public bool SecondFactorRequired = false;
   public bool SignsInWithPassword = false;
+  /// A program, not a person (`Integration`): it never signs in, and acts through its API keys.
+  public bool IsIntegration = false;
   public DateTime? LastSignIn;
   /// How many places they are signed in right now (other than the manager's own session).
   public int SignedIn = 0;
   public List<HeldRole> Roles = [];
   /// The offered app roles they do NOT hold — what a manager may grant them.
   public List<RoleOption> Grantable = [];
+  /// Every app role the app offers, held or not — what "Add role" lists, so the whole of what can be given is in view.
+  public List<RoleOffer> Offered = [];
   public List<AccessEvent> History = [];
 }
 
@@ -167,6 +190,7 @@ public PersonDetail PersonDetailOf(Guid id) {
     d.SecondFactorRequired = App.Setting<AccountsSetup>().SecondFactor.Required(u);
     d.SignsInWithPassword = true;
   }
+  d.IsIntegration = p is Integration;
   foreach (var g in RoleGrant.Where(x => x.Member == p).ToList()) {
     var label = RoleLabel(g.Role);
     if (label != "") { d.Roles.Add(new HeldRole { Role = g.Role, Label = label, Removable = IsOfferedRole(g.Role, RoleScope.App) }); }
@@ -181,12 +205,15 @@ public PersonDetail PersonDetailOf(Guid id) {
     var held = false;
     foreach (var h in d.Roles) { if (h.Organization == "" && h.Role != null && h.Role.Value == o.Role.Value) { held = true; } }
     if (!held) { d.Grantable.Add(o); }
+    d.Offered.Add(new RoleOffer { Role = o.Role, Label = o.Label, Description = o.Description, Held = held });
   }
   foreach (var c in AccessChange.Where(x => x.Person == p).Include(x => x.By).OrderByDescending(x => x.At).Take(50).ToList()) {
-    d.History.Add(new AccessEvent { At = c.At, What = Describe(c), By = c.By.DisplayName != "" ? c.By.DisplayName : c.By.Email, Reason = c.Reason });
+    d.History.Add(new AccessEvent { Id = c.Id, At = c.At, What = Describe(c), Change = Describe(c), Person = d.Name,
+                                    By = c.By.DisplayName != "" ? c.By.DisplayName : c.By.Email, Reason = c.Reason,
+                                    Refused = c.State == AccessChangeState.Refused, Refusal = c.Refusal ?? "" });
   }
   foreach (var i in Invitation.Where(x => x.AcceptedBy == p).Include(x => x.InvitedBy).ToList()) {
-    d.History.Add(new AccessEvent { At = i.AcceptedAt ?? i.CreatedAt, What = "Joined by an invitation to " + InvitedInto(i)
+    d.History.Add(new AccessEvent { Id = i.Id, At = i.AcceptedAt ?? i.CreatedAt, What = "Joined by an invitation to " + InvitedInto(i)
       + (i.Role != null && RoleLabel(i.Role.Value) != "" ? " as " + RoleLabel(i.Role.Value) : ""),
       By = i.InvitedBy.DisplayName, Reason = "" });
   }
@@ -207,6 +234,7 @@ public string Describe(AccessChange c) {
   if (c.Kind == AccessChangeKind.ApiKeyIssued && c.Key != null) { return $"Issued the API key “{c.Key!.Name}” {c.Key!.Ending}"; }
   if (c.Kind == AccessChangeKind.ApiKeyRevoked && c.Key != null) { return $"Revoked the API key “{c.Key!.Name}” {c.Key!.Ending}"; }
   if (c.Kind == AccessChangeKind.IntegrationAdded && org != "") { return $"Added the integration “{c.IntegrationName ?? ""}” as {role} at {org}"; }
+  if (c.Kind == AccessChangeKind.IntegrationAdded && c.Role == null) { return $"Added the integration “{c.IntegrationName ?? ""}” with no role"; }
   if (c.Kind == AccessChangeKind.IntegrationAdded) { return $"Added the integration “{c.IntegrationName ?? ""}” as {role}"; }
   if (c.Kind == AccessChangeKind.IntegrationReassigned) { return $"Became the owner of the integration “{c.IntegrationName ?? ""}”"; }
   return c.Kind.Label;
@@ -221,7 +249,13 @@ public List<AccessEvent> AccessTrail(int take = 100) {
     var what = c.Kind == AccessChangeKind.IntegrationAdded ? Describe(c) + ", owned by " + whom
              : c.Kind == AccessChangeKind.IntegrationReassigned ? $"Gave the integration “{c.IntegrationName ?? ""}” to {whom}"
              : Describe(c) + " — " + whom;
-    all.Add(new AccessEvent { At = c.At, What = what, By = c.By.DisplayName != "" ? c.By.DisplayName : c.By.Email, Reason = c.Reason });
+    all.Add(new AccessEvent { Id = c.Id, At = c.At, What = what, Change = Describe(c), Person = whom,
+                              By = c.By.DisplayName != "" ? c.By.DisplayName : c.By.Email, Reason = c.Reason,
+                              Refused = c.State == AccessChangeState.Refused, Refusal = c.Refusal ?? "" });
   }
   return all;
 }
+
+/// How many changes the access page reads at most, however often "Show more" is pressed — past it the page says it
+/// shows the newest that many, and reads no more.
+public int AccessTrailMost() { return 500; }

@@ -1,0 +1,60 @@
+// The list rows an app's own page draws a key or an integration with — one record, a line of a list. The kit's API keys
+// page draws its records in tables (`RecordTable`, `RecordRow`); these two are for an app that lists them itself, and
+// are what an app written against 0.10.0 calls.
+
+namespace Osysharp.UserManagement;
+
+using Osysharp.Ui;
+
+/// One integration as a list item: its name, the role it acts with (or that it holds none), who answers for it (and,
+/// when they have left, that its owner is deactivated), how many keys it holds — and Reassign and Switch off. Put it in
+/// a `Stack(role: UiRole.List)`. For a table of them, use `RecordTable` and `RecordRow`.
+component IntegrationRow(IntegrationLine line, Action onSwitchOff, Action onReassign) {
+  render {
+    Row(gap: 3, align: Align.Start, py: 3, borderBW: 1, border: Colors.Border, role: UiRole.ListItem, label: line.Name) {
+      Box(pt: 1, decorative: true) { Icon(Icons.Link, size: 16, color: Colors.TextSecondary); }
+      Stack(gap: 1, grow: 1, minW: "0") {
+        Row(gap: 2, align: Align.Center, wrap: Wrapping.Wrap) {
+          Text(line.Name, fontWeight: FontWeight.Medium);
+          if (line.Roles != "") { Badge(line.Roles, tone: Tone.Default); }
+          else if (!line.HoldsRole) { Badge("Holds no role", tone: Tone.Default); }
+        }
+        Row(gap: 2, align: Align.Center, wrap: Wrapping.Wrap) {
+          Text("Owned by " + line.Owner, fontSize: FontSize.Label, color: Colors.TextSecondary, minW: "0");
+          // It keeps working when its owner leaves; this is what tells a manager to give it to somebody who is here.
+          if (!line.OwnerActive) { Badge("Owner deactivated", tone: Tone.Warning); }
+          Text($"Keys in use: {line.Keys}", fontSize: FontSize.Label, color: Colors.TextMuted);
+        }
+      }
+      Row(gap: 1, align: Align.Center) {
+        Button("Reassign", onPress: onReassign, tone: line.OwnerActive ? Tone.Ghost : Tone.Default, size: Size.Sm, announceAs: "Reassign " + line.Name);
+        Button("Switch off", onPress: onSwitchOff, tone: Tone.Ghost, size: Size.Sm, announceAs: "Switch off " + line.Name);
+      }
+    }
+  }
+}
+
+/// One key as a list item: what it is for, whose it is, how it ends, who issued it, when it was last used — and Revoke
+/// (none when `onRevoke` is null: a revoked key). Put it in a `Stack(role: UiRole.List)`. For a table of them, use
+/// `RecordTable` and `RecordRow`.
+component ApiKeyRow(ApiKeyLine line, Action? onRevoke) {
+  render {
+    Row(gap: 3, align: Align.Start, py: 3, borderBW: 1, border: Colors.Border, role: UiRole.ListItem,
+        label: line.Name + " — " + line.Holder, opacity: line.Revoked ? 0.75 : 1) {
+      Box(pt: 1, decorative: true) {
+        if (line.Revoked) { Icon(Icons.Lock, size: 16, color: Colors.TextMuted); }
+        else { Icon(Icons.Lock, size: 16, color: Colors.TextSecondary); }
+      }
+      Stack(gap: 1, grow: 1, minW: "0") {
+        Row(gap: 2, align: Align.Center, wrap: Wrapping.Wrap) {
+          Text(line.Name, fontWeight: FontWeight.Medium);
+          Text(line.Ending, fontFamily: Font.Mono, fontSize: FontSize.Caption, color: Colors.TextMuted);
+          if (line.Revoked) { Badge("Revoked", tone: Tone.Default); }
+        }
+        Text("Acts as " + line.Holder, fontSize: FontSize.Label, color: Colors.TextSecondary, minW: "0");
+        Text(line.Revoked ? line.RevokedWords : line.Issued + " · " + line.LastUsed, fontSize: FontSize.Caption, color: Colors.TextMuted, minW: "0");
+      }
+      if (onRevoke != null) { Button("Revoke", onPress: onRevoke!, tone: Tone.Ghost, size: Size.Sm, announceAs: "Revoke " + line.Name); }
+    }
+  }
+}

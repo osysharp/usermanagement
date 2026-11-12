@@ -4,7 +4,7 @@ using Osysharp.UserAccounts;
 using Osysharp.Organizations;
 using Osysharp.UserManagement;
 
-[Role] enum AppRole { Authenticator, Agent, Lead, Admin, Integration, TeamLead }
+[Role] enum AppRole { Authenticator, Agent, Lead, Admin, Integration, TeamLead, Auditor, Billing, Founder, Vault }
 
 policy IsAdmin => RoleGrant.Any(g => g.Member == user && g.Role == AppRole.Admin);
 policy ManagesPeople => IsAdmin;
@@ -37,12 +37,39 @@ app.Roles = new RolesSetup { Offered = [
   new RoleChoice { Role = AppRole.Admin, Label = "Admin", Description = "Runs the desk.", HeldIn = RoleScope.App },
   // Held only inside a team — never an app-wide role (`RoleChoice.HeldIn`).
   new RoleChoice { Role = AppRole.TeamLead, Label = "Team lead", Description = "Leads one team.", HeldIn = RoleScope.Organization },
+  // The roles the app's OWN rules below fence (tests/app-rules.test.osy) — offered like any other, so the kit's own
+  // checks pass them and only the app's rule can refuse.
+  new RoleChoice { Role = AppRole.Auditor, Label = "Auditor", Description = "Reads the books — a person, never a program." },
+  new RoleChoice { Role = AppRole.Billing, Label = "Billing", Description = "Changes what customers pay — given only by a founder." },
+  new RoleChoice { Role = AppRole.Founder, Label = "Founder", Description = "Started the desk — never taken away." },
+  new RoleChoice { Role = AppRole.Vault, Label = "Vault", Description = "Opens the vault — given to nobody, by any route." },
 ] };
 
 app.People = new PeopleSetup { KeepOneOf = AppRole.Admin };
 
 // The user manager reads who holds which role; every change goes through it, so nothing here grants create or delete.
-partial entity RoleGrant { security { allow read when ManagesPeople; } }
+partial entity RoleGrant {
+  security {
+    allow read when ManagesPeople;
+    // The app's OWN rules on who may hold which role — they bind the user manager's and the invitations' routes as they
+    // bind any write (tests/app-rules.test.osy).
+    // A person's role, never a program's — said in the app's own words, which is what the manager is told.
+    deny create where Role == AppRole.Auditor && (Member is Integration) message "Auditor is a person's role — an integration is never given it.";
+    deny create when !IsFounder where Role == AppRole.Billing;              // only a founder hands it out
+    deny delete where Role == AppRole.Founder;                              // never taken away
+    deny create where Role == AppRole.Vault;                                // nobody, by any route
+  }
+}
+
+policy IsFounder => RoleGrant.Any(g => g.Member == user && g.Role == AppRole.Founder);
+
+// …and the same within an organisation.
+partial entity MembershipRole {
+  security {
+    deny create where Role == AppRole.Auditor && (Membership.Member is Integration) message "Auditor is a person's role — an integration is never given it.";
+    deny create where Role == AppRole.Vault;
+  }
+}
 
 public class AdminsUseCodes : SecondFactorPolicy {
   public override bool Required(User account) { return RoleGrant.Any(g => g.Member == account && g.Role == AppRole.Admin); }

@@ -24,6 +24,40 @@ component PeopleOnlyPage() { render { PeopleManager(invitations: false); } }
 [Route("/people/keys")] [Authorize(ManagesPeople)] [Render(CSR)] [Title("API keys")]
 component KeysPage() { render { ApiKeyManager(); } }
 
+/// A page an app wrote against 0.10.0: its own lists of the keys and the integrations, a row each (`ApiKeyRow`,
+/// `IntegrationRow`), and what its buttons were pressed for said under them.
+[Route("/people/keys/own")] [Authorize(ManagesPeople)] [Render(CSR)] [Title("Our keys")]
+component OwnKeysPage() {
+  List<ApiKeyLine> keys = [];
+  List<IntegrationLine> integrations = [];
+  string pressed = "";
+  on mount { keys = ApiKeyLines(DateTime.UtcNow); integrations = IntegrationLines(); }
+  action Pressed(string what) { pressed = what; }
+  render {
+    Stack(p: 5, gap: 4) {
+      Stack(gap: 0, role: UiRole.List, label: "Our keys") {
+        foreach (var k in keys) { ApiKeyRow(k, () => Pressed("revoke " + k.Name)); }
+      }
+      Stack(gap: 0, role: UiRole.List, label: "Our integrations") {
+        foreach (var i in integrations) { IntegrationRow(i, () => Pressed("switch off " + i.Name), () => Pressed("reassign " + i.Name)); }
+      }
+      if (pressed != "") { Text("Asked to " + pressed); }
+    }
+  }
+}
+
 [Route("/people/trail")] [Authorize(ManagesPeople)] [Render(CSR)] [Title("Access changes")]
 component TrailPage() { render { Stack(p: 5) { AccessTrailList(); } } }
+
+/// The trail two changes at a time — so "Show more" is reached with three changes rather than fifty-one.
+[Route("/people/trail/two")] [Authorize(ManagesPeople)] [Render(CSR)] [Title("Access changes")]
+component ShortTrailPage() { render { Stack(p: 5) { AccessTrailList(take: 2); } } }
+
+/// Where this app lists the kit's API keys: under a group of its own, ahead of the team's — the kit announces the page
+/// under "Team", and the app says otherwise (`ISettingsPlacement`, tests/settings.test.osy).
+class DeskPlacement : ISettingsPlacement {
+  public SettingsPlacement[] Placements() {
+    return [new SettingsPlacement { To = "/settings/api-keys", Group = "Developers", Order = 5 }];
+  }
+}
 

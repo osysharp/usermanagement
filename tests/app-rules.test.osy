@@ -1,0 +1,266 @@
+// THE APP'S OWN RULES ON WHO HOLDS WHICH ROLE BIND THE KITS' ROUTES (owner, 12 Nov 2026: "the kit's workflow honours
+// the app's rules on role grants"). The app (tests/model/app.osy) writes, on `RoleGrant` and on `MembershipRole`:
+//   Auditor — a person's role, never an integration's · Billing — handed out only by a founder · Founder — never taken
+//   away · Vault — given to nobody, by any route.
+// Every route of the user manager and the invitations that writes a grant meets those rules as if the person who asked
+// had written the row: refused, at once, to the caller, with nothing written — and the same route with a role the rules
+// do not touch works.
+// SECURITY-INVARIANT(an-apps-deny-binds-every-kits-code).
+
+using Osysharp.Identity;
+using Osysharp.UserAccounts;
+using Osysharp.Organizations;
+using Osysharp.Invitations;
+using Osysharp.UserManagement;
+using Osysharp.Mail;
+using Osysharp.Workflow;
+
+[TestFixture]
+void RuledDesk() {
+  // Sam started the desk: an admin and its founder. Ari is an admin who is not. Mo is nobody yet.
+  var sam = new User { Email = "sam@desk.test", DisplayName = "Sam", PasswordHash = Security.HashPassword("correct-horse-1"),
+                       EmailVerifiedAt = DateTime.UtcNow };
+  new RoleGrant { Member = sam, Role = AppRole.Admin };
+  new RoleGrant { Member = sam, Role = AppRole.Founder };
+  var ari = new User { Email = "ari@desk.test", DisplayName = "Ari", PasswordHash = Security.HashPassword("correct-horse-2"),
+                       EmailVerifiedAt = DateTime.UtcNow };
+  new RoleGrant { Member = ari, Role = AppRole.Admin };
+  new User { Email = "mo@desk.test", DisplayName = "Mo", PasswordHash = Security.HashPassword("correct-horse-4"),
+             EmailVerifiedAt = DateTime.UtcNow };
+  new Team { Name = "Billing" };
+}
+
+principal Sam => User.Single(u => u.Email == "sam@desk.test");
+principal Ari => User.Single(u => u.Email == "ari@desk.test");
+principal Mo => User.Single(u => u.Email == "mo@desk.test");
+principal Nina => User.Single(u => u.Email == "nina@desk.test");
+
+User Account(string email) {
+  User? found = null;
+  runas (Sam) { found = User.Single(u => u.Email == email); }
+  return found!;
+}
+
+Team BillingTeam() {
+  Team? found = null;
+  runas (Sam) { found = Team.Single(t => t.Name == "Billing"); }
+  return found!;
+}
+
+/// How many grants of `r` there are, as a people manager reads them.
+int Holders(AppRole r) {
+  var n = 0;
+  runas (Sam) { n = RoleGrant.Count(g => g.Role == r); }
+  return n;
+}
+
+/// How many organisation roles `r` are held, as a people manager reads them.
+int HoldersInOrganizations(AppRole r) {
+  var n = 0;
+  runas (Sam) { n = MembershipRole.Count(x => x.Role == r); }
+  return n;
+}
+
+/// The token in the newest invitation mail to `to`, or "".
+string InvitationLinkTokenFor(string to) {
+  string found = "";
+  runas (AuthBootstrap) {
+    var mail = OutgoingMail.Where(m => m.To == to && m.Text != null && m.Text.Contains("/invite/"))
+      .OrderByDescending(m => m.CreatedAt).FirstOrDefault();
+    if (mail != null) {
+      var text = mail.Text ?? "";
+      var at = text.IndexOf("/invite/") + "/invite/".Length;
+      var end = at;
+      while (end < text.Length && text.Substring(end, 1) != " " && text.Substring(end, 1) != "\n" && text.Substring(end, 1) != ")") {
+        end = end + 1;
+      }
+      found = text.Substring(at, end - at);
+    }
+  }
+  return found;
+}
+
+// ── GrantRole / RevokeRole ─────────────────────────────────────────────────────────────────────────────────────────
+
+[Test(RuledDesk)]
+void an_integration_is_never_given_a_role_the_apps_rule_keeps_for_people() {
+  runas (Sam) {
+    var bot = AddIntegration("Export bot", AppRole.Agent, reason: "Nightly export");
+    // Refused AT ONCE, to the manager who asked, in the app's own words — not a run that fails later.
+    var refusal = Assert.Throws(() => GrantRole(bot, AppRole.Auditor, "Reads the books"));
+    Assert.Contains("Auditor is a person's role — an integration is never given it.", refusal.Message);
+    // …and the trail records the change as refused, with that reason.
+    var refused = AccessChange.Single(c => c.Person == bot && c.Role == AppRole.Auditor);
+    Assert.Equal(AccessChangeState.Refused, refused.State);
+    Assert.Contains("an integration is never given it", refused.Refusal ?? "");
+    // …and a person is given it by the same route.
+    GrantRole(Account("mo@desk.test"), AppRole.Auditor, "Joins the audit");
+  }
+  Assert.Equal(1, Holders(AppRole.Auditor));
+  runas (Sam) { Assert.True(RoleGrant.Any(g => g.Role == AppRole.Auditor && g.Member.Email == "mo@desk.test")); }
+}
+
+[Test(RuledDesk)]
+void a_role_only_a_founder_hands_out_is_refused_to_a_manager_who_is_not_one() {
+  // The rule asks who is giving the role — the manager who asked, not the run that applies it.
+  runas (Ari) { Assert.Throws(() => GrantRole(Account("mo@desk.test"), AppRole.Billing)); }
+  Assert.Equal(0, Holders(AppRole.Billing));
+  runas (Sam) { GrantRole(Account("mo@desk.test"), AppRole.Billing); }
+  Assert.Equal(1, Holders(AppRole.Billing));
+}
+
+[Test(RuledDesk)]
+void a_role_the_app_says_is_never_taken_away_is_not_revoked() {
+  runas (Ari) { Assert.Throws(() => RevokeRole(Account("sam@desk.test"), AppRole.Founder)); }
+  Assert.Equal(1, Holders(AppRole.Founder));
+  // …while a role the rule does not name is revoked as ever.
+  runas (Sam) { GrantRole(Account("mo@desk.test"), AppRole.Lead); RevokeRole(Account("mo@desk.test"), AppRole.Lead); }
+  Assert.Equal(0, Holders(AppRole.Lead));
+}
+
+[Test(RuledDesk)]
+void a_role_the_app_gives_nobody_is_refused_by_grant_role_and_nothing_is_recorded_as_applied() {
+  runas (Sam) {
+    Assert.Throws(() => GrantRole(Account("mo@desk.test"), AppRole.Vault, "Needs the vault"));
+    Assert.Equal(0, AccessChange.Count(c => c.Role == AppRole.Vault && c.State == AccessChangeState.Applied));
+  }
+  Assert.Equal(0, Holders(AppRole.Vault));
+}
+
+// ── AddIntegration, across the app and inside an organisation ─────────────────────────────────────────────────────
+
+[Test(RuledDesk)]
+void an_integration_is_never_added_holding_a_role_the_apps_rule_keeps_for_people() {
+  runas (Sam) {
+    var refusal = Assert.Throws(() => AddIntegration("Ledger bot", AppRole.Auditor, reason: "Reads the books"));
+    Assert.Contains("Auditor is a person's role", refusal.Message);
+    Assert.Equal(0, Integration.Count(i => i.DisplayName == "Ledger bot"));
+    // …and with a role the rule does not name, it is added.
+    AddIntegration("Ledger bot", AppRole.Agent);
+  }
+  Assert.Equal(0, Holders(AppRole.Auditor));
+}
+
+[Test(RuledDesk)]
+void an_integration_added_to_an_organisation_is_never_given_a_role_the_apps_rule_keeps_for_people_there() {
+  var team = BillingTeam();
+  runas (Sam) {
+    var refusal = Assert.Throws(() => AddIntegration("Team bot", AppRole.Auditor, reason: "Reads the team's books", organization: team));
+    Assert.Contains("Auditor is a person's role", refusal.Message);
+    Assert.Equal(0, Integration.Count(i => i.DisplayName == "Team bot"));
+    AddIntegration("Team bot", AppRole.Agent, organization: team);
+  }
+  Assert.Equal(0, HoldersInOrganizations(AppRole.Auditor));
+  Assert.Equal(1, HoldersInOrganizations(AppRole.Agent));
+}
+
+// A manager the app's rule refuses a role still adds the integration — holding no role — and whoever the rule lets
+// give that role gives it afterwards. The refused attempt leaves no integration behind.
+[Test(RuledDesk)]
+void a_manager_the_apps_rule_refuses_the_role_adds_the_integration_holding_none_and_the_rules_route_gives_it() {
+  runas (Ari) {
+    Assert.Throws(() => AddIntegration("Bill bot", AppRole.Billing, reason: "Raises the invoices"));
+    Assert.Equal(0, Integration.Count(i => i.DisplayName == "Bill bot"));
+    var refused = AccessChange.Single(c => c.Kind == AccessChangeKind.IntegrationAdded);
+    Assert.Equal(AccessChangeState.Refused, refused.State);
+    Assert.Contains("This app's own rules refuse it", refused.Refusal ?? "");
+    var bot = AddIntegration("Bill bot", reason: "A founder gives it Billing");
+    Assert.Equal(0, RoleGrant.Count(g => g.Member == bot));
+  }
+  Assert.Equal(0, Holders(AppRole.Billing));
+  runas (Sam) { GrantRole(Integration.Single(i => i.DisplayName == "Bill bot"), AppRole.Billing, "Raises the invoices"); }
+  Assert.Equal(1, Holders(AppRole.Billing));
+  runas (Sam) { Assert.True(RoleGrant.Any(g => g.Role == AppRole.Billing && g.Member.DisplayName == "Bill bot")); }
+}
+
+// ── organisation membership roles ───────────────────────────────────────────────────────────────────────────────────
+
+[Test(RuledDesk)]
+void an_organisation_role_the_app_gives_nobody_is_refused_by_the_user_manager() {
+  var team = BillingTeam();
+  var mo = Account("mo@desk.test");
+  runas (Sam) {
+    AddToOrganization(team, mo);
+    Assert.Throws(() => GrantInOrganization(team, mo, AppRole.Vault));
+    GrantInOrganization(team, mo, AppRole.Agent);
+  }
+  Assert.Equal(0, HoldersInOrganizations(AppRole.Vault));
+  Assert.Equal(1, HoldersInOrganizations(AppRole.Agent));
+}
+
+// ── invitations accepting into a role ───────────────────────────────────────────────────────────────────────────────
+
+[Test(RuledDesk)]
+void accepting_an_invitation_never_grants_a_role_the_app_gives_nobody() {
+  // An existing account, signed in, accepts: refused at once — the person sees it, and holds nothing.
+  Invitation? sent = null;
+  runas (Sam) { sent = Invite("mo@desk.test", AppRole.Vault); }
+  Workflow.Settle(sent!);
+  runas (Mo) { Assert.Throws(() => AcceptInvitation(MyInvitations()[0])); }
+  Assert.Equal(0, Holders(AppRole.Vault));
+  runas (Sam) { Assert.Equal(InvitationStatus.Pending, Invitation.Single(i => i.Id == sent!.Id).Status); }
+}
+
+[Test(RuledDesk)]
+void a_newcomer_accepting_an_invitation_is_never_given_a_role_the_app_gives_nobody() {
+  Invitation? sent = null;
+  runas (Sam) { sent = Invite("nina@desk.test", AppRole.Vault); }
+  Workflow.Settle(sent!);
+  var token = InvitationLinkTokenFor("nina@desk.test");
+  Assert.NotEqual("", token);
+  Assert.NotEqual("", JoinByInvitation(token, "nina@desk.test", "Nina", "a-long-password-1"));
+  Assert.Equal(0, Holders(AppRole.Vault));
+  runas (Sam) { Assert.False(User.Any(u => u.Email == "nina@desk.test")); }
+}
+
+[Test(RuledDesk)]
+void accepting_an_invitation_into_an_organisation_never_grants_a_role_the_app_gives_nobody_there() {
+  var team = BillingTeam();
+  Invitation? sent = null;
+  runas (Sam) { sent = Invite("mo@desk.test", AppRole.Vault, team); }
+  Workflow.Settle(sent!);
+  runas (Mo) { Assert.Throws(() => AcceptInvitation(MyInvitations()[0])); }
+  Assert.Equal(0, HoldersInOrganizations(AppRole.Vault));
+}
+
+// A rule about WHO gives the role is asked about the person who sent the invitation — never the person accepting it,
+// who chose nothing. SECURITY-INVARIANT(an-invitations-grant-is-its-inviters).
+
+[Test(RuledDesk)]
+void a_founders_invitation_gives_the_role_only_a_founder_hands_out() {
+  Invitation? sent = null;
+  runas (Sam) { sent = Invite("mo@desk.test", AppRole.Billing); }
+  Workflow.Settle(sent!);
+  // Mo is no founder; Sam, who invited, is.
+  runas (Mo) { AcceptInvitation(MyInvitations()[0]); }
+  Assert.Equal(1, Holders(AppRole.Billing));
+}
+
+[Test(RuledDesk)]
+void an_invitation_from_a_manager_who_is_no_founder_does_not_give_that_role() {
+  // Ari may invite, and may not hand out Billing: the invitation is sent, and gives nothing when it is accepted.
+  Invitation? sent = null;
+  runas (Ari) { sent = Invite("mo@desk.test", AppRole.Billing); }
+  Workflow.Settle(sent!);
+  runas (Mo) { Assert.Throws(() => AcceptInvitation(MyInvitations()[0])); }
+  Assert.Equal(0, Holders(AppRole.Billing));
+  runas (Sam) { Assert.Equal(InvitationStatus.Pending, Invitation.Single(i => i.Id == sent!.Id).Status); }
+}
+
+[Test(RuledDesk)]
+void a_newcomer_invited_by_a_founder_is_given_the_role_only_a_founder_hands_out() {
+  Invitation? sent = null;
+  runas (Sam) { sent = Invite("nina@desk.test", AppRole.Billing); }
+  Workflow.Settle(sent!);
+  Assert.Equal("", JoinByInvitation(InvitationLinkTokenFor("nina@desk.test"), "nina@desk.test", "Nina", "a-long-password-1"));
+  Assert.Equal(1, Holders(AppRole.Billing));
+}
+
+[Test(RuledDesk)]
+void an_invitation_with_a_role_the_rules_do_not_name_is_accepted_into_it() {
+  Invitation? sent = null;
+  runas (Sam) { sent = Invite("mo@desk.test", AppRole.Auditor); }
+  Workflow.Settle(sent!);
+  runas (Mo) { AcceptInvitation(MyInvitations()[0]); }
+  Assert.Equal(1, Holders(AppRole.Auditor));
+}

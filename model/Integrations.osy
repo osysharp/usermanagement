@@ -9,7 +9,7 @@ using Osysharp.Organizations;
 // under a teammate's, and switching it off is one act that takes every key it holds with it.
 //
 // ⚑ ADDED LIKE ANY OTHER CHANGE TO ACCESS. A people manager records an `AccessChange` (`IntegrationAdded`) naming it, its
-//   role and its owner; the change's run makes the account and grants the role in the same commit. Its keys are issued
+//   role (or none) and its owner; the change's run makes the account and grants the role in the same commit. Its keys are issued
 //   and revoked as everybody's are (`IssueApiKey`, `RevokeApiKey`), and deactivating it (`Deactivate`) revokes them all.
 //
 // ⚑ HELD ACROSS THE APP, OR IN ONE ORGANISATION. Without `organization:` its role is an app role (a `RoleGrant`). With it,
@@ -49,9 +49,21 @@ string NewIntegrationAddress() {
   return "integration-" + Security.RandomHex(12) + "@integrations.invalid";
 }
 
-/// Add an integration called `name`, holding the role `r` (one the app offers), answered for by `owner` (the caller when
-/// not given). Without `organization` the role is held across the app; with it, the role is held in `organization` alone
+/// Add an integration called `name`, holding the role `r` (one the app offers) or none, answered for by `owner` (the
+/// caller when not given). Without `organization` the role is held across the app; with it, the role is held in `organization` alone
 /// and the integration holds no app role. Answers the integration — issue it a key next (`IssueApiKey`). Committed.
+///
+/// With NO role — `AddIntegration("Zapier")` — the integration is added holding none, anywhere: the account, its owner
+/// and the record of its creation, and no `RoleGrant`, membership or `MembershipRole`. For an app whose own rules say
+/// roles are given only by its own function: this kit owns the account and its keys, the app owns who holds what where,
+/// and gives the integration its role by that function.
+///
+/// SECURITY-INVARIANT(an-integration-added-with-no-role-does-nothing-a-role-admits): an integration added with no role
+/// is given NOTHING — no `RoleGrant`, no membership, no `MembershipRole` — so a key it holds authenticates as it and is
+/// admitted by no rule that asks for a role or a membership: it reads and writes what a signed-in account holding
+/// nothing does, until the app gives it a role. An organisation named with no role is refused. Guarded by
+/// tests/integrations.test.osy (`an_integration_added_with_no_role_does_nothing_until_it_is_given_one`,
+/// `an_integration_added_with_no_role_is_recorded_and_listed_as_holding_none`).
 ///
 /// SECURITY-INVARIANT(an-integration-added-to-an-organisation-holds-no-app-role): an integration added with
 /// `organization:` is given its role as a `MembershipRole` in that organisation and NOTHING ELSE — no `RoleGrant`, no
@@ -63,6 +75,17 @@ string NewIntegrationAddress() {
 /// `an_integration_added_to_one_organisation_holds_no_app_role`,
 /// `a_role_is_given_to_an_integration_only_where_the_app_says_it_is_held`).
 public Integration AddIntegration(string name, role r, Principal? owner = null, string reason = "", Organization? organization = null) {
+  return AddIntegrationHolding(name, r, owner, reason, organization);
+}
+
+/// Add an integration called `name` holding NO role — `AddIntegration("Zapier")` — answered for by `owner` (the caller
+/// when not given). See the form above for what it is given (nothing) and why an app adds one this way.
+public Integration AddIntegration(string name, Principal? owner = null, string reason = "", Organization? organization = null) {
+  return AddIntegrationHolding(name, null, owner, reason, organization);
+}
+
+/// Both forms of `AddIntegration`: the role `r`, or none.
+internal Integration AddIntegrationHolding(string name, role? r, Principal? owner, string reason, Organization? organization) {
   var me = Session.CurrentUser;
   if (me == null) { throw new NotAuthorized("Sign in to add an integration."); }
   var shown = name.Trim();
@@ -103,13 +126,16 @@ string ReassignProblem(Integration? integration, Principal owner) {
   return "";
 }
 
-/// Make the integration a change names and give it its role (as the system — its run): in the change's organisation when
-/// it names one, and then nothing across the app; else across the app, telling the app the role was given.
+/// Make the integration a change names and give it its role, when it names one (as the system — its run): in the
+/// change's organisation when it names one, and then nothing across the app; else across the app, telling the app the
+/// role was given.
 void MakeIntegration(AccessChange change) {
-  var r = change.Role!.Value;
   var made = new Integration { Email = NewIntegrationAddress(), DisplayName = change.IntegrationName ?? "Integration",
                                Owner = change.Person, IsActive = true, Source = IdentitySource.Local };
   change.Integration = made;
+  // Added holding no role: the account and nothing else — no grant, no membership, and the app is told of none.
+  if (change.Role == null) { return; }
+  var r = change.Role!.Value;
   if (change.Organization != null) {
     GrantIn(change.Organization!, made, r);
     return;
@@ -129,6 +155,9 @@ public class IntegrationLine {
   /// page says so, so a manager gives it to somebody who is here (`ReassignIntegration`).
   public bool OwnerActive = true;
   public string Roles = "";
+  /// Whether it holds any role at all, across the app or in an organisation — named by the app or not. False for one
+  /// added with no role and not yet given one: its keys are accepted and no rule that asks for a role admits it.
+  public bool HoldsRole = false;
   public bool Active = true;
   public int Keys = 0;
 }
@@ -150,17 +179,21 @@ public List<IntegrationLine> IntegrationLines(bool withInactive = false) {
   }
   foreach (var i in integrations) {
     var roles = new List<string>();
+    // A role the app gave by its own route and does not list among those it offers has no name here, and is still held.
+    var holds = false;
     foreach (var g in grants.Where(x => x.Member.Id == i.Id)) {
+      holds = true;
       var label = RoleLabel(g.Role);
       if (label != "") { roles.Add(label); }
     }
     // One held in an organisation is named with it — "Planner at Beta" — never as though it were held across the app.
     foreach (var h in held.Where(x => x.Membership.Member.Id == i.Id)) {
+      holds = true;
       var label = RoleLabel(h.Role);
       if (label != "") { roles.Add(label + " at " + h.Membership.Organization.Name); }
     }
     lines.Add(new IntegrationLine { Id = i.Id, Name = i.DisplayName, Owner = NameOf(i.Owner), OwnerActive = i.Owner.IsActive, Roles = string.Join(", ", roles),
-      Active = i.IsActive, Keys = keys.ContainsKey(i.Id) ? keys[i.Id] : 0 });
+      HoldsRole = holds, Active = i.IsActive, Keys = keys.ContainsKey(i.Id) ? keys[i.Id] : 0 });
   }
   return lines.OrderBy(l => l.Active ? 0 : 1).ToList();
 }

@@ -1,0 +1,176 @@
+// The table the kit's pages list records in — keys, integrations, access changes. Columns under their headings on a
+// wide screen; on a phone each record is a block, its values under its name with their headings beside them. Its
+// lines, grounds and type are the Ui kit's tokens (`Colors.RowLine`, `Colors.MetaText`, `FontSize.Label`), so it wears
+// an app's look as the Ui kit's own `SettingsTable` does.
+//
+// ⚑ ONE READ FILLS IT, AND IT SAYS WHERE THE READ STANDS: rows' places while it is in flight (`loaded: false`), the
+//   reason and a way to ask again when it failed (`problem`, `onRetry`), and — from the page — an `EmptyState` when it
+//   answered nothing.
+
+namespace Osysharp.UserManagement;
+
+using Osysharp.Ui;
+
+/// One value of a record, with the heading of the column it sits under.
+class RecordCell {
+  public string Heading = "";
+  public string Text = "";
+  public bool First = false;
+}
+
+/// A record's values paired with their columns' headings — the one at `strong` is what the record is called.
+List<RecordCell> RecordCellsOf(string[] columns, string[] values, int strong = 0) {
+  List<RecordCell> cells = [];
+  for (var i = 0; i < values.Length; i++) {
+    cells.Add(new RecordCell { Heading = i < columns.Length ? columns[i] : "", Text = values[i], First = i == strong });
+  }
+  return cells;
+}
+
+/// A table of records: `columns` are its headings (the last one "" when each row ends in an action), `cols` its grid
+/// template. The rows are the slot (`RecordRow`). In a test it is the grid named `label` on a wide screen —
+/// `Assert.Cell("Nightly export", "Acts as", "Ada Moreno")` — and a list of that name on a phone.
+[Composable, Part]
+component RecordTable(string label, string[] columns, string cols, bool loaded = true, bool empty = false,
+                      string problem = "", Action? onRetry = null) {
+  render {
+    Stack(gap: 0, w: "100%", bg: Colors.Surface, borderW: 1, border: Colors.Border, rounded: Radius.Lg, overflow: Overflow.Hidden,
+          role: (!loaded || empty || problem != "") ? UiRole.Group : Layout.AtLeast(Tablet) ? UiRole.Grid : UiRole.List, label: label) {
+      if (Layout.AtLeast(Tablet) && loaded && !empty && problem == "") {
+        Box(display: Display.Grid, cols: cols, gap: 3, px: 3, py: 2, bg: Colors.Sunken, role: UiRole.GridRow) {
+          foreach (var c in RecordCellsOf(columns, columns)) {
+            Row(role: UiRole.ColumnHeader, minW: "0", label: c.Text == "" ? "Actions" : c.Text) {
+              Text(c.Text, fontSize: FontSize.Caption, fontWeight: FontWeight.Medium, color: Colors.MetaText);
+            }
+          }
+        }
+      }
+      if (problem != "") {
+        Stack(gap: 2, p: 4, align: Align.Start) {
+          Alert(problem, title: "This list could not be read", tone: Tone.Danger);
+          if (onRetry != null) { Button("Try again", onPress: onRetry!, size: Size.Sm); }
+        }
+      } else if (!loaded) {
+        Box(px: 3, py: 3) { Skeleton(); }
+        Box(px: 3, py: 3, borderTW: 1, border: Colors.RowLine) { Skeleton(); }
+        Box(px: 3, py: 3, borderTW: 1, border: Colors.RowLine) { Skeleton(shape: SkeletonShape.HalfLine); }
+      } else {
+        Slot;
+      }
+    }
+  }
+}
+
+/// One record of a `RecordTable`: its `values` in the columns' order, the one at `strong` what it is called. The slot
+/// is its action (a button), in the last column — under the values on a phone; `actions: false` for a table with none.
+/// `mark` is a badge beside the record's name and `note` a line under it: that a change was refused and why, that an
+/// owner has left. `faded` draws a record that no longer acts (a revoked key).
+[Composable, Part]
+component RecordRow(string[] columns, string[] values, string cols, int strong = 0, bool actions = true, string note = "",
+                    Tone noteTone = Tone.Default, string mark = "", Tone markTone = Tone.Default, bool faded = false) {
+  variants { base { BorderTW = 1; Border = Colors.RowLine; } }
+  render {
+    if (Layout.AtLeast(Tablet)) {
+      Box(display: Display.Grid, cols: cols, gap: 3, px: 3, py: 2, alignItems: Align.Center, w: "100%", role: UiRole.GridRow,
+          opacity: faded ? 0.75 : 1) {
+        foreach (var c in RecordCellsOf(columns, values, strong)) {
+          if (c.First) {
+            Stack(gap: 0, role: UiRole.GridCell, minW: "0") {
+              Row(gap: 2, align: Align.Center, wrap: Wrapping.Wrap, minW: "0") {
+                Text(c.Text, fontSize: FontSize.Label, fontWeight: FontWeight.Medium, wordBreak: WordBreak.BreakWord, minW: "0");
+                if (mark != "") { Badge(mark, tone: markTone); }
+              }
+              if (note != "") {
+                Text(note, fontSize: FontSize.Caption, color: noteTone == Tone.Danger ? Colors.DangerInk : Colors.MetaText,
+                     wordBreak: WordBreak.BreakWord);
+              }
+            }
+          } else {
+            Row(role: UiRole.GridCell, minW: "0") {
+              Text(c.Text, fontSize: FontSize.Label, color: Colors.TextSecondary, wordBreak: WordBreak.BreakWord, minW: "0");
+            }
+          }
+        }
+        if (actions) { Row(role: UiRole.GridCell, justify: Justify.End, gap: 1, minW: "0") { Slot; } }
+      }
+    } else {
+      // A phone: the record's name first, whichever column it is, then its other values under it, each with its heading.
+      Stack(gap: 1, px: 3, py: 3, w: "100%", role: UiRole.ListItem, label: values[strong], opacity: faded ? 0.75 : 1) {
+        foreach (var c in RecordCellsOf(columns, values, strong)) {
+          if (c.First) {
+            Row(gap: 2, align: Align.Center, wrap: Wrapping.Wrap, minW: "0") {
+              Text(c.Text, fontSize: FontSize.Label, fontWeight: FontWeight.Medium, wordBreak: WordBreak.BreakWord, minW: "0");
+              if (mark != "") { Badge(mark, tone: markTone); }
+            }
+            if (note != "") {
+              Text(note, fontSize: FontSize.Caption, color: noteTone == Tone.Danger ? Colors.DangerInk : Colors.MetaText,
+                   wordBreak: WordBreak.BreakWord);
+            }
+          }
+        }
+        foreach (var c in RecordCellsOf(columns, values, strong)) {
+          if (!c.First && c.Text != "") {
+            Row(gap: 2, align: Align.Start, minW: "0") {
+              Text(c.Heading, fontSize: FontSize.Caption, color: Colors.MetaText, w: "104px", shrink: 0);
+              Text(c.Text, fontSize: FontSize.Label, color: Colors.TextSecondary, wordBreak: WordBreak.BreakWord, minW: "0");
+            }
+          }
+        }
+        if (actions) { Row(gap: 2, wrap: Wrapping.Wrap, pt: 1) { Slot; } }
+      }
+    }
+  }
+}
+
+/// A heading with what it is about under it, and the section's one action beside it — above a table, never beside it.
+[Composable, Part]
+component TableHeading(string title, string description = "") {
+  render {
+    Row(gap: 3, align: Align.End, wrap: Wrapping.Wrap, w: "100%") {
+      Stack(gap: 1, grow: 1, minW: "0", basis: "280px") {
+        Text(title, fontSize: FontSize.Subhead, fontWeight: FontWeight.Headings);
+        if (description != "") { Text(description, fontSize: FontSize.Label, color: Colors.TextMuted, maxW: "680px"); }
+      }
+      Row(gap: 2, shrink: 0) { Slot; }
+    }
+  }
+}
+
+/// The quiet "danger" area at the foot of a record: the changes that take something away, each a row with what
+/// happens in one line and a button of ONE weight — none of them filled, none a link. Each asks before it runs.
+[Composable, Part]
+component DangerArea(string title = "Danger area") {
+  render {
+    Stack(gap: 0, borderW: 1, border: Colors.DangerTint, rounded: Radius.Lg, overflow: Overflow.Hidden, role: UiRole.Group, label: title) {
+      Row(px: 3, py: 2, bg: Colors.DangerTint) {
+        Text(title, fontSize: FontSize.Caption, fontWeight: FontWeight.Semibold, color: Colors.DangerInk);
+      }
+      Slot;
+    }
+  }
+}
+
+/// One change in a `DangerArea`: its name is its button, with what follows from it said beside it.
+[Composable, Part]
+component DangerAction(string label, string consequence, Action onPress, string announceAs = "") {
+  variants { base { BorderTW = 1; Border = Colors.RowLine; } }
+  render {
+    Row(gap: 3, align: Align.Center, px: 3, py: 2, wrap: Wrapping.Wrap) {
+      Text(consequence, fontSize: FontSize.Caption, color: Colors.TextSecondary, grow: 1, basis: "180px", minW: "0");
+      DangerButton(label, onPress, announceAs);
+    }
+  }
+}
+
+/// The danger area's button: the danger ink on the surface, outlined — a step below a filled danger button, because the
+/// press only opens the question.
+[Composable, Part]
+component DangerButton(string label, Action onPress, string announceAs = "") {
+  variants {
+    base { Display = Display.InlineFlex; AlignItems = Align.Center; H = Length.ControlSm; Px = 3; Rounded = Radius.Sm;
+           FontSize = FontSize.Label; FontWeight = FontWeight.Semibold; Bg = Colors.Surface; Color = Colors.DangerInk;
+           BorderW = 1; Border = Colors.DangerTint; Cursor = Cursor.Pointer; WhiteSpace = WhiteSpace.Nowrap; Shrink = 0;
+           Transition = Motion.Fast; Hover { Bg = Colors.DangerTint; } Focus { Shadow = Shadow.Ring; } }
+  }
+  render { Pressable(onClick: onPress, label: announceAs != "" ? announceAs : label) { Text(label); } }
+}

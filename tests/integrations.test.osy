@@ -373,3 +373,90 @@ void adding_an_integration_to_an_organisation_is_recorded_naming_it() {
     Assert.Equal("Agent at Acme", IntegrationLines()[0].Roles);
   }
 }
+
+// ── added holding no role — for an app whose own rules give roles only through its own function ────────────────────
+
+principal RelayAccount => Integration.Single(i => i.DisplayName == "Relay");
+
+// ⛔ SECURITY-INVARIANT(an-integration-added-with-no-role-does-nothing-a-role-admits): added with no role it is given
+// nothing — no grant, no membership — so its key is accepted and reads and writes exactly what a signed-in account
+// holding nothing does (Mo, here): none of the rows a role or a membership admits. Given a role, it does what the role
+// admits — so the difference is the role, nothing else.
+[Test(Team)]
+void an_integration_added_with_no_role_does_nothing_until_it_is_given_one() {
+  TwoCustomers();
+  var acme = CustomerNamed("Acme");
+  string relayKey = "";
+  string moKey = "";
+  runas (Sam) {
+    var relay = AddIntegration("Relay", reason: "The desk gives it its role");
+    Assert.Equal("Sam", relay.Owner.DisplayName);
+    Assert.Equal(0, RoleGrant.Count(g => g.Member == relay));
+    Assert.Equal(0, Membership.Count(m => m.Member == relay));
+    Assert.Equal(0, MembershipRole.Count(r => r.Membership.Member == relay));
+    relayKey = IssueApiKey(relay, "Relay feed").Key;
+    moKey = IssueApiKey(Person("mo@desk.test"), "Mo's script").Key;
+  }
+  // The key is accepted: the caller is the integration.
+  Assert.Contains("@integrations.invalid", Caller(relayKey));
+  // What a role or a membership admits is not its — list by list, the same nothing an account holding nothing reads.
+  foreach (var rows in new List<string> { "Customer", "CustomerTicket", "TicketNote", "DeskNotice" }) {
+    Assert.Equal(0, Total(Api.Get("/api/rest/v1/team/entities/" + rows, apiKey: moKey)));
+    Assert.Equal(0, Total(Api.Get("/api/rest/v1/team/entities/" + rows, apiKey: relayKey)));
+  }
+  Assert.Equal(404, Api.Get("/api/rest/v1/team/entities/Customer/" + acme.Id, apiKey: relayKey).StatusCode);
+  Assert.False(Api.Post("/api/rest/v1/team/entities/CustomerTicket", new { customer = acme.Id, title = "Filed by Mo" }, apiKey: moKey).IsSuccess);
+  Assert.False(Api.Post("/api/rest/v1/team/entities/CustomerTicket", new { customer = acme.Id, title = "Filed by the relay" }, apiKey: relayKey).IsSuccess);
+  // As itself, in the app: the same.
+  runas (RelayAccount) {
+    Assert.Equal(0, Customer.Count());
+    Assert.Equal(0, CustomerTicket.Count());
+    Assert.Equal(0, TicketNote.Count());
+    Assert.Equal(0, DeskNotice.Count());
+    Assert.Equal(0, RoleGrant.Count());
+    // Of the trail it reads what every account reads — what was done to its own access (its key) — and no other line.
+    Assert.Equal(1, AccessChange.Count());
+    Assert.Equal(AccessChangeKind.ApiKeyIssued, AccessChange.Single().Kind);
+    Assert.Denied(() => { new CustomerTicket { Customer = acme, Title = "Into Acme" }; UnitOfWork.Commit(); });
+    Assert.Denied(() => { new DeskNotice { Text = "From the relay" }; UnitOfWork.Commit(); });
+    Assert.Denied(() => AddIntegration("Its own", owner: Person("mo@desk.test")));
+  }
+  runas (Sam) {
+    Assert.Equal(2, CustomerTicket.Count());
+    Assert.Equal(1, DeskNotice.Count());
+    Assert.Equal(1, Integration.Count());
+    // Given a role, it reads what the role admits.
+    GrantRole(Integration.Single(i => i.DisplayName == "Relay"), AppRole.Agent, "It reads the desk's notices");
+  }
+  Assert.Equal(1, Total(Api.Get("/api/rest/v1/team/entities/DeskNotice", apiKey: relayKey)));
+  Assert.Equal(0, Total(Api.Get("/api/rest/v1/team/entities/DeskNotice", apiKey: moKey)));
+}
+
+// Its creation is on the trail, saying it holds no role; the integrations list says so until it is given one; and an
+// organisation named with no role is refused before anything is recorded.
+[Test(Team)]
+void an_integration_added_with_no_role_is_recorded_and_listed_as_holding_none() {
+  TwoCustomers();
+  var acme = CustomerNamed("Acme");
+  runas (Sam) {
+    var relay = AddIntegration("Relay", reason: "The desk gives it its role");
+    var added = AccessChange.Single(c => c.Kind == AccessChangeKind.IntegrationAdded);
+    Assert.Equal(AccessChangeState.Applied, added.State);
+    Assert.True(added.Role == null);
+    Assert.Equal("Relay", added.Integration!.DisplayName);
+    var trail = AccessTrail();
+    Assert.Equal("Added the integration “Relay” with no role, owned by Sam", trail[0].What);
+    Assert.Equal("The desk gives it its role", trail[0].Reason);
+    var line = IntegrationLines()[0];
+    Assert.Equal("", line.Roles);
+    Assert.False(line.HoldsRole);
+    Assert.Equal("Say which role the integration holds in that organisation — or leave the organisation out to add it holding no role.",
+                 Assert.Throws<ValidationException>(() => AddIntegration("Acme relay", organization: acme)).Message);
+    Assert.Equal(1, Integration.Count());
+    Assert.Equal(1, AccessChange.Count(c => c.Kind == AccessChangeKind.IntegrationAdded));
+    GrantRole(relay, AppRole.Agent);
+    var given = IntegrationLines()[0];
+    Assert.Equal("Agent", given.Roles);
+    Assert.True(given.HoldsRole);
+  }
+}

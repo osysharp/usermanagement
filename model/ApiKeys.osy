@@ -150,11 +150,18 @@ public class ApiKeyLine {
   public Guid Id;
   public string Name = "";
   public string Holder = "";
+  /// The account it acts as — what a page matches against the integrations it lists.
+  public Guid HolderId;
   public string Ending = "";
   public string Issued = "";
   public string LastUsed = "";
   public bool Revoked;
   public string RevokedWords = "";
+  /// Who issued it, and the day — the table's own columns (`Issued` says both in one line).
+  public string IssuedBy = "";
+  public string IssuedOn = "";
+  /// When it was last presented, in words ("3 h ago"), "Never" — and "" for a revoked key.
+  public string Used = "";
 }
 
 /// The keys, newest first: those in use, then (when `withRevoked`) those revoked. `now` words the times.
@@ -165,9 +172,11 @@ public List<ApiKeyLine> ApiKeyLines(DateTime now, bool withRevoked = false) {
   foreach (var k in keys) {
     var used = k.Slot == 1 ? k.Holder.ApiKeyUsedAt : k.Holder.ApiKey2UsedAt;
     lines.Add(new ApiKeyLine {
-      Id = k.Id, Name = k.Name, Holder = NameOf(k.Holder), Ending = k.Ending,
+      Id = k.Id, Name = k.Name, Holder = NameOf(k.Holder), HolderId = k.Holder.Id, Ending = k.Ending,
       Issued = $"Issued by {NameOf(k.IssuedBy)} · {k.IssuedAt:d MMM yyyy}",
       LastUsed = k.RevokedAt != null ? "" : used == null ? "Never used" : "Last used " + Ago(used.Value, now),
+      IssuedBy = NameOf(k.IssuedBy), IssuedOn = $"{k.IssuedAt:d MMM yyyy}",
+      Used = k.RevokedAt != null ? "" : used == null ? "Never" : Ago(used.Value, now),
       Revoked = k.RevokedAt != null,
       RevokedWords = k.RevokedAt == null ? "" : $"Revoked {k.RevokedAt:d MMM yyyy}" + (k.RevokedBy != null ? " by " + NameOf(k.RevokedBy!) : ""),
     });

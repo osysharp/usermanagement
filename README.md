@@ -57,6 +57,27 @@ Write `PeopleManager()` — not `PeopleManager(canInvite: MayInvite)`, which han
 only a check on the caller's own rows. `canInvite: false` leaves inviting out; it never widens what `MayInvite` says. The
 invite itself is refused by the Invitations kit's rules whatever a page offered.
 
+In a person's drawer, **Add role** lists every role the app offers, with the ones they hold marked *Held*. What takes
+something away — *Remove <role>* and *Deactivate* — sits in one danger area at the foot of the drawer: each says what
+follows in one line, both are the same quiet button, and each asks first.
+
+## Where the pages sit in your settings
+
+The kit announces three settings pages: **People** and **API keys** under "Team", and **Access changes** under
+"Security" (it is an auditor's page). An app with groups of its own places any of them itself, by route:
+
+```
+class MyPlacement : ISettingsPlacement {
+  public SettingsPlacement[] Placements() {
+    return [new SettingsPlacement { To = "/settings/access", Group = "Audit", Order = 40 }];
+  }
+}
+```
+
+The pages are drawn with the Ui kit's theme tokens only, so they take your theme's accent and type scale, and its
+density: `Space { Step = "0.2rem"; }` with `Length { ControlSm = "28px"; ControlMd = "32px"; }` tightens every page in
+the app, these included.
+
 From code: `GrantRole(p, AppRole.Lead, "covering December")`, `RevokeRole`, `Deactivate(p, "left")`, `Reactivate`,
 `ResetSecondFactor(p, "lost phone — confirmed by a call")`, `SignOutEverywhere(p)`, `AddToOrganization(org, p)`,
 `GrantInOrganization(org, p, AppRole.Lead)`; reads `PeopleList(search)`, `PersonDetailOf(id)`, `AccessTrail()`.
@@ -66,7 +87,8 @@ From code: `GrantRole(p, AppRole.Lead, "covering December")`, `RevokeRole`, `Dea
 A people manager issues a teammate an API key on `/settings/api-keys` (or `ApiKeyManager()` on a page of your own), so
 that a program can call the app's REST API as that teammate, with exactly what they may do. The key is shown **once**,
 with a copy button, and only its hash is kept on the person's account (two at a time, so a key can be replaced with no
-gap). The list says whose each key is, what it is for, who issued it and when it was last used. Revoking one, or
+gap). Under the heading *Keys in use* a table says, for each key, its name, how it ends, whom it acts as, who issued
+it and when, and when it was last used, with Revoke at the end of the row. Revoking one, or
 deactivating its holder, refuses it from the next request. Issuing and revoking are access changes like any other,
 on the trail with who did it and why. From code: `IssueApiKey(p, "Nightly export").Key`, `RevokeApiKey(key)`.
 
@@ -91,6 +113,17 @@ An integration can also work for **one organisation** only — an agent key for 
 app, so its key reads what Acme's members read and nothing of any other organisation. A role is given only where the
 app says it is held (`RoleChoice.HeldIn`): an app-wide role is refused inside an organisation, and an organisation's
 role is refused without one. The trail reads *Added the integration “Acme feed” as Agent at Acme*.
+
+An integration can be added **holding no role**: `AddIntegration("Relay")`. It is the account, its owner and the record
+of its creation, and nothing else — its key is accepted and can do nothing that needs a role. This is for an app whose
+own rules give a role only through the app's own function: add the integration with no role, then give it one by that
+function. The pages say *Holds no role* until then, and a people manager who may gives it one from its drawer on the
+people page. The trail reads *Added the integration “Relay” with no role, owned by Sam*.
+
+An app that lists keys and integrations on a page of its own draws one record a row: `ApiKeyRow(line, onRevoke)` over
+`ApiKeyLines(now)` and `IntegrationRow(line, onSwitchOff, onReassign)` over `IntegrationLines()`, each in a
+`Stack(role: UiRole.List)`. The kit's own page lists them in tables (`RecordTable`, `RecordRow`), which is what a new
+page should use.
 
 An integration outlives the person who answers for it. When they leave and their account is deactivated, the program
 keeps working, and its row says **Owner deactivated**. **Reassign** gives it to somebody who is here, with a reason, as
@@ -193,40 +226,32 @@ From [`tests/api-keys.test.osy`](tests/api-keys.test.osy).
 ```osy
 using Osysharp.Identity;
 using Osysharp.UserAccounts;
+using Osysharp.Organizations;
+using Osysharp.Invitations;
 using Osysharp.UserManagement;
+using Osysharp.Mail;
+using Osysharp.Workflow;
 
-[Test(Team)]
-void the_integrations_page_reads_the_same_however_many_integrations_there_are() {
+[Test(RuledDesk)]
+void an_integration_is_never_given_a_role_the_apps_rule_keeps_for_people() {
   runas (Sam) {
-    var first = AddIntegration("Program 1", AppRole.Agent, reason: "A test");
-    IssueApiKey(first, "Key 1");
+    var bot = AddIntegration("Export bot", AppRole.Agent, reason: "Nightly export");
+    // Refused AT ONCE, to the manager who asked, in the app's own words — not a run that fails later.
+    var refusal = Assert.Throws(() => GrantRole(bot, AppRole.Auditor, "Reads the books"));
+    Assert.Contains("Auditor is a person's role — an integration is never given it.", refusal.Message);
+    // …and the trail records the change as refused, with that reason.
+    var refused = AccessChange.Single(c => c.Person == bot && c.Role == AppRole.Auditor);
+    Assert.Equal(AccessChangeState.Refused, refused.State);
+    Assert.Contains("an integration is never given it", refused.Refusal ?? "");
+    // …and a person is given it by the same route.
+    GrantRole(Account("mo@desk.test"), AppRole.Auditor, "Joins the audit");
   }
-  var one = 0;
-  runas (Sam) {
-    var mark = Cost.Mark();
-    IntegrationLines();
-    one = Cost.StatementsSince(mark);
-  }
-  runas (Sam) {
-    for (var i = 2; i <= 6; i++) {
-      var made = AddIntegration("Program " + i, AppRole.Agent, reason: "A test");
-      IssueApiKey(made, "Key " + i);
-    }
-  }
-  runas (Sam) {
-    var mark = Cost.Mark();
-    var lines = IntegrationLines();
-    var six = Cost.StatementsSince(mark);
-    Log.Information("IntegrationLines: " + one + " statements with one integration, " + six + " with six");
-    Assert.Equal(6, lines.Count);
-    Assert.Equal(1, lines.Single(l => l.Name == "Program 6").Keys);
-    Assert.Equal("Agent", lines.Single(l => l.Name == "Program 6").Roles);
-    Assert.Equal(one, six);
-  }
+  Assert.Equal(1, Holders(AppRole.Auditor));
+  runas (Sam) { Assert.True(RoleGrant.Any(g => g.Role == AppRole.Auditor && g.Member.Email == "mo@desk.test")); }
 }
 ```
 
-From [`tests/cost.test.osy`](tests/cost.test.osy).
+From [`tests/app-rules.test.osy`](tests/app-rules.test.osy).
 
 ## Learn more
 

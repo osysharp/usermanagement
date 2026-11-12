@@ -138,7 +138,18 @@ workflow AccessChangeFlow {
         c.Refusal = problem;
         goto Refused;
       }
-      ApplyAccessChange(c);
+      // The APP's own rules hold here as on any write (SECURITY-INVARIANT(an-apps-deny-binds-every-kits-code)): a
+      // `deny create where Role == X && Member is Integration` on `RoleGrant`, judged for the manager who asked. Its
+      // refusal is this change's refusal — recorded with its reason, and said to the manager as they ask. (A security
+      // refusal is caught only as `Exception`: it is deliberately not in the typed set. The run writes past this kit's
+      // own rules and those of the kits it is built on, so what refuses here is a rule of the app's.)
+      var refused = "";
+      try { ApplyAccessChange(c); }
+      catch (Exception e) { refused = AppRuleRefusal(e.Message); }
+      if (refused != "") {
+        c.Refusal = refused;
+        goto Refused;
+      }
       goto Applied;
     }
   }
@@ -147,7 +158,7 @@ workflow AccessChangeFlow {
 }
 
 /// "" when the change obeys every rule a change obeys, else the sentence saying which it breaks: a role must be named
-/// (and, to be given, be one the app offers); a manager never deactivates themself; the app is never left without an
+/// (and, to be given, be one the app offers) — but for an integration, which may be added holding none; a manager never deactivates themself; the app is never left without an
 /// active holder of `PeopleSetup.KeepOneOf`; a second factor is reset only with a reason, and only for an account that
 /// has one to reset; an organisation change names its organisation.
 [SuppressWarning("cost-unbounded-read")]   // the active holders of the one role the app must keep — its admins
@@ -155,11 +166,15 @@ public string AccessProblem(Principal person, Principal by, AccessChangeKind kin
   var setup = App.Setting<PeopleSetup>();
   if (setup.ReasonRequired && reason.Trim() == "") { return "Say why — every change to somebody's access is recorded with its reason."; }
   var needsRole = kind == AccessChangeKind.RoleGranted || kind == AccessChangeKind.RoleRevoked
-    || kind == AccessChangeKind.OrganizationRoleGranted || kind == AccessChangeKind.OrganizationRoleRevoked
-    || kind == AccessChangeKind.IntegrationAdded;
+    || kind == AccessChangeKind.OrganizationRoleGranted || kind == AccessChangeKind.OrganizationRoleRevoked;
   if (needsRole && r == null) { return "Say which role."; }
+  // An integration may be added holding NO role — the app then gives it one by its own route. An organisation is where
+  // a role is held, so one named with no role says nothing.
+  if (kind == AccessChangeKind.IntegrationAdded && r == null && org != null) {
+    return "Say which role the integration holds in that organisation — or leave the organisation out to add it holding no role.";
+  }
   if ((kind == AccessChangeKind.RoleGranted || kind == AccessChangeKind.OrganizationRoleGranted
-       || kind == AccessChangeKind.IntegrationAdded) && !IsOfferedRole(r!.Value)) {
+       || (kind == AccessChangeKind.IntegrationAdded && r != null)) && !IsOfferedRole(r!.Value)) {
     return "That role is not one this app hands out.";
   }
   // A role is given where the app says it may be held (`RoleChoice.HeldIn`): one held only inside an organisation is
@@ -169,7 +184,7 @@ public string AccessProblem(Principal person, Principal by, AccessChangeKind kin
   if (kind == AccessChangeKind.RoleGranted && !IsOfferedRole(r!.Value, RoleScope.App)) {
     return "That role is held only inside an organisation — give it from the organisation's people.";
   }
-  if (kind == AccessChangeKind.IntegrationAdded && org == null && !IsOfferedRole(r!.Value, RoleScope.App)) {
+  if (kind == AccessChangeKind.IntegrationAdded && org == null && r != null && !IsOfferedRole(r!.Value, RoleScope.App)) {
     return "That role is held only inside an organisation — say which organisation the integration holds it in.";
   }
   if (heldInOrg && !IsOfferedRole(r!.Value, RoleScope.Organization)) {
@@ -265,7 +280,15 @@ AccessChange RecordAccessChange(Principal person, AccessChangeKind kind, role? r
   var made = new AccessChange { Person = person, By = me, Kind = kind, Role = r, Organization = org,
                                 Reason = reason.Trim(), At = DateTime.UtcNow };
   UnitOfWork.Commit();
+  ThrowIfRefused(made.Id, "The change was not made.");
   return made;
+}
+
+/// The sentence a change refused by one of the APP's own rules records and says — the platform's refusal, which names
+/// the rule as the app wrote it, kept to what the trail holds.
+string AppRuleRefusal(string message) {
+  var said = "This app's own rules refuse it: " + message;
+  return said.Length <= 500 ? said : said.Substring(0, 497) + "…";
 }
 
 /// Give `person` the app role `r` (one the app offers).

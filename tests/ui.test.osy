@@ -37,8 +37,15 @@ void a_manager_finds_a_person_gives_them_a_role_and_the_change_is_in_their_histo
   Assert.Hidden("Ada Moreno");
   Ui.Click("Mo Haddad");
   Assert.Visible("No roles — they can sign in, and do nothing that needs one.");
-  Ui.Click("Lead", within: "Give a role");
+  // "Add role" lists EVERY role the app offers — not one bare name — and says which are held.
+  Ui.Click("Add role");
+  Assert.Visible("Agent", within: "Add role");
+  Assert.Visible("Admin", within: "Add role");
+  Assert.Visible("Watches the queues.", within: "Add role");
+  Assert.Hidden("Held");
+  Ui.Click("Add Lead");
   Assert.Visible("Mo Haddad is now Lead.");
+  Assert.Visible("Held", within: "Add role");
   Assert.Visible("Granted Lead", within: "History");
   Ui.Shot("people-person");
 }
@@ -142,10 +149,12 @@ void a_manager_issues_a_key_sees_it_once_and_revokes_it() {
   Ui.Shot("api-keys-once");
   Ui.Click("I have copied it");
   Assert.Hidden("Copy it into the program now — it is not shown again.");
-  Assert.Visible("Acts as Ada Moreno", within: "Keys in use");
-  Assert.Visible("Never used", within: "Keys in use");
+  // A table under its heading: one row a key, a column each for whose it is, who issued it and when it was last used.
+  Assert.Cell("Nightly export", "Acts as", "Ada Moreno");
+  Assert.Cell("Nightly export", "Issued by", "Sam Okafor");
+  Assert.Cell("Nightly export", "Last used", "Never");
   Ui.Shot("api-keys-list");
-  Ui.Click("Revoke", within: "Keys in use");
+  Ui.Click("Revoke Nightly export");
   Assert.Dialog("Revoke “Nightly export”?");
   Ui.Click("Revoke it");
   Assert.Visible("a request that presents it is refused from now on.");
@@ -171,20 +180,60 @@ void a_manager_adds_an_integration_issues_its_key_and_switches_it_off() {
   Ui.Click("Add it and issue a key");
   Assert.Visible("The key for Zapier — Zapier");
   Ui.Click("I have copied it");
-  Assert.Visible("Owned by " , within: "Integrations");
-  Assert.Visible("Keys in use: 1", within: "Integrations");
-  Assert.Visible("Acts as Zapier", within: "Keys in use");
+  Assert.Visible("Sam Okafor", within: "Integrations");
+  Assert.Visible("Agent", within: "Integrations");
+  Assert.Visible("Zapier", within: "Keys in use");
   Ui.Shot("integrations-list");
   runas (Sam) {
     Assert.Equal(1, Integration.Count(i => i.DisplayName == "Zapier" && i.IsActive));
     Assert.Equal(1, ApiKey.Count(k => k.RevokedAt == null && k.Slot > 0));
   }
-  Ui.Click("Switch off", within: "Integrations");
+  Ui.Click("Switch off Zapier");
   Assert.Dialog("Switch off Zapier?");
   Ui.Click("Switch it off");
   Assert.Visible("Zapier is switched off — every key it held is refused from now on.");
   Assert.Visible("No integrations yet");
   runas (Sam) { Assert.Equal(0, ApiKey.Count(k => k.RevokedAt == null && k.Slot > 0)); }
+}
+
+/// A manager adds an integration holding no role: the integrations list and its key's row say it holds none and can do
+/// nothing that needs one; the people list and its drawer say the same, and the drawer's "Add role" is where a manager
+/// who may gives it one — after which the pages name the role.
+[Test(Office)]
+void an_integration_added_with_no_role_is_shown_holding_none_until_a_manager_gives_it_one() {
+  Ui.Viewport(1440, 900);
+  Ui.SignInAs(Sam);
+  Ui.Visit("/people/keys");
+  Ui.Click("Add an integration");
+  Assert.Dialog("Add an integration");
+  Ui.Fill("Name", "Relay");
+  Ui.Click("Add it and issue a key");
+  Assert.Visible("Choose what it may do — the role it acts with, or no role yet.");
+  Ui.Click("No role yet", within: "What it may do");
+  Ui.Click("Add it and issue a key");
+  Assert.Visible("The key for Relay — Relay");
+  Ui.Click("I have copied it");
+  Assert.Visible("Holds no role", within: "Integrations");
+  Assert.Visible("It can do nothing that needs a role until it is given one.", within: "Integrations");
+  Assert.Visible("Relay holds no role — this key is accepted and can do nothing that needs one.", within: "Keys in use");
+  Ui.Shot("integrations-no-role");
+  runas (Sam) {
+    var relay = Integration.Single(i => i.DisplayName == "Relay");
+    Assert.Equal(0, RoleGrant.Count(g => g.Member == relay));
+    Assert.Equal(0, Osysharp.Organizations.Membership.Count(m => m.Member == relay));
+  }
+  Ui.Visit("/people");
+  Ui.Click("Relay");
+  Assert.Visible("Holds no role — its keys are accepted, and it can do nothing that needs one.");
+  Assert.Visible("An integration never signs in — it acts through its API keys.");
+  Ui.Shot("people-integration-no-role");
+  Ui.Click("Add role");
+  Ui.Click("Add Agent");
+  Assert.Visible("Relay is now Agent.");
+  Ui.Visit("/people/keys");
+  Assert.Visible("Agent", within: "Integrations");
+  Assert.Hidden("Holds no role");
+  Assert.Hidden("Relay holds no role — this key is accepted and can do nothing that needs one.");
 }
 
 /// An integration whose owner left keeps working, and its row says "Owner deactivated"; a manager reassigns it to
@@ -203,18 +252,18 @@ void an_integration_whose_owner_left_is_marked_and_a_manager_reassigns_it() {
   Ui.Viewport(1440, 900);
   Ui.SignInAs(Sam);
   Ui.Visit("/people/keys");
-  Assert.Visible("Owned by Ari Lindqvist", within: "Integrations");
+  Assert.Cell("Zapier", "Owner", "Ari Lindqvist");
   Assert.Visible("Owner deactivated", within: "Integrations");
   Ui.Shot("integrations-owner-left");
-  Ui.Click("Reassign", within: "Integrations");
+  Ui.Click("Reassign Zapier");
   Assert.Dialog("Reassign Zapier");
   Ui.Select("New owner", sam!);
   Ui.Fill("Why", "Ari left the team");
   Ui.Shot("integrations-reassign");
   Ui.Click("Reassign it");
   Assert.Visible("Zapier is now answered for by Sam Okafor. Its keys go on working.");
-  Assert.Visible("Owned by Sam Okafor", within: "Integrations");
+  Assert.Cell("Zapier", "Owner", "Sam Okafor");
   Assert.Hidden("Owner deactivated");
-  Assert.Visible("Keys in use: 1", within: "Integrations");
+  Assert.Cell("Zapier", "Keys", "1");
   runas (Sam) { Assert.Equal("Gave the integration “Zapier” to Sam Okafor", AccessTrail()[0].What); }
 }

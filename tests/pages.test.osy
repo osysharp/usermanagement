@@ -1,0 +1,201 @@
+// The people drawer's danger area and "Add role", and the tables the keys, the integrations and the access trail are
+// listed in — driven as a manager drives them, at a desk's width and a phone's. `osy test --pixels` photographs each.
+
+using Osysharp.Identity;
+using Osysharp.UserAccounts;
+using Osysharp.UserManagement;
+
+[TestFixture]
+void Desk() {
+  var sam = new User { Email = "sam@desk.test", DisplayName = "Sam Okafor", PasswordHash = Security.HashPassword("correct-horse-1"),
+                       EmailVerifiedAt = DateTime.UtcNow, LastLoginAt = DateTime.UtcNow };
+  new RoleGrant { Member = sam, Role = AppRole.Admin };
+  var ari = new User { Email = "ari@desk.test", DisplayName = "Ari Lindqvist", PasswordHash = Security.HashPassword("correct-horse-2"),
+                       EmailVerifiedAt = DateTime.UtcNow, LastLoginAt = DateTime.UtcNow };
+  new RoleGrant { Member = ari, Role = AppRole.Admin };
+  var ada = new User { Email = "ada.moreno@desk.test", DisplayName = "Ada Moreno", PasswordHash = Security.HashPassword("correct-horse-3"),
+                       EmailVerifiedAt = DateTime.UtcNow };
+  new RoleGrant { Member = ada, Role = AppRole.Agent };
+  new User { Email = "mo.haddad@desk.test", DisplayName = "Mo Haddad", PasswordHash = Security.HashPassword("correct-horse-4"),
+             EmailVerifiedAt = DateTime.UtcNow };
+}
+
+principal DeskSam => User.Single(u => u.Email == "sam@desk.test");
+
+/// ⭐ WHAT TAKES SOMETHING AWAY IS IN ONE PLACE, ONE WEIGHT: removing a role and deactivating sit together in the
+/// drawer's danger area, each with what follows from it, and each asks before it runs — and is recorded.
+[Test(Desk)]
+void removing_a_role_and_deactivating_sit_together_and_each_asks_first() {
+  Ui.Viewport(1440, 900);
+  Ui.SignInAs(DeskSam);
+  Ui.Visit("/people");
+  Ui.Click("Ada Moreno");
+  Assert.Visible("They lose what Agent lets them do, at once.", within: "Danger area");
+  Assert.Visible("They cannot sign in, and every session they have ends. Their work stays theirs.", within: "Danger area");
+  Ui.Shot("people-danger-area");
+  // Nothing is taken on the first press: it asks, and Cancel leaves the role where it was.
+  Ui.Click("Remove Agent", within: "Danger area");
+  Assert.Dialog("Remove Agent from Ada Moreno?");
+  Ui.Click("Cancel");
+  runas (DeskSam) { Assert.Equal(1, RoleGrant.Count(g => g.Member.Email == "ada.moreno@desk.test" && g.Role == AppRole.Agent)); }
+  Ui.Click("Remove Agent", within: "Danger area");
+  Ui.Fill("Why (recorded with the change)", "Moved to another desk");
+  Ui.Click("Remove role");
+  Assert.Visible("Agent was taken from Ada Moreno.");
+  Assert.Visible("Revoked Agent", within: "History");
+  runas (DeskSam) { Assert.Equal(0, RoleGrant.Count(g => g.Member.Email == "ada.moreno@desk.test" && g.Role == AppRole.Agent)); }
+  // With no role left to take, the area holds the one change that remains — and it asks too.
+  Assert.Hidden("Remove Agent");
+  Ui.Click("Deactivate Ada Moreno");
+  Assert.Dialog("Deactivate Ada Moreno?");
+  Ui.Click("Deactivate");
+  Assert.Visible("Ada Moreno can no longer sign in, and was signed out everywhere.");
+  // Nothing is left to take from a deactivated account with no role: the area goes, and Reactivate is offered.
+  Assert.Hidden("Danger area");
+  Assert.Visible("Reactivate");
+}
+
+/// "Add role" shows the whole of what can be given, the held ones marked — and a held one is taken away there by the
+/// same question the danger area asks.
+[Test(Desk)]
+void add_role_lists_every_offered_role_and_marks_and_removes_the_held_ones() {
+  Ui.Viewport(1440, 900);
+  Ui.SignInAs(DeskSam);
+  Ui.Visit("/people");
+  Ui.Click("Ada Moreno");
+  Ui.Click("Add role");
+  Assert.Visible("Held", within: "Add role");
+  Assert.Visible("Runs the desk.", within: "Add role");
+  Assert.Visible("Opens the vault — given to nobody, by any route.", within: "Add role");
+  Ui.Shot("people-add-role");
+  Ui.Click("Remove Agent", within: "Add role");
+  Assert.Dialog("Remove Agent from Ada Moreno?");
+  Ui.Click("Remove role");
+  Assert.Visible("Agent was taken from Ada Moreno.");
+  Assert.Hidden("Held");
+}
+
+/// A role the APP's own rules refuse is still listed (the kit cannot know the rule), and the server's refusal is said
+/// in the drawer — and kept on the trail, marked Refused with the reason, never read as a role given.
+[Test(Desk)]
+void a_role_the_apps_rules_refuse_is_said_in_the_drawer_and_marked_refused_on_the_trail() {
+  Ui.Viewport(1440, 900);
+  Ui.SignInAs(DeskSam);
+  Ui.Visit("/people");
+  Ui.Click("Mo Haddad");
+  Ui.Click("Add role");
+  Ui.Click("Add Vault");
+  Assert.Visible("This app's own rules refuse it");
+  Assert.Hidden("Mo Haddad is now Vault.");
+  runas (DeskSam) { Assert.Equal(0, RoleGrant.Count(g => g.Role == AppRole.Vault)); }
+  Ui.Visit("/people/trail");
+  // The trail's row says what was asked, of whom and by whom — and that it was refused, in its own fields.
+  runas (DeskSam) {
+    var asked = AccessTrail()[0];
+    Assert.Equal("Granted Vault", asked.Change);
+    Assert.Equal("Mo Haddad", asked.Person);
+    Assert.Equal("Sam Okafor", asked.By);
+    Assert.True(asked.Refused);
+    Assert.Contains("This app's own rules refuse it", asked.Refusal);
+  }
+  Assert.Visible("Granted Vault", within: "Access trail");
+  Assert.Visible("Mo Haddad", within: "Access trail");
+  Assert.Visible("Refused", within: "Access trail");
+  Assert.Visible("This app's own rules refuse it", within: "Access trail");
+  Ui.Shot("access-trail-refused");
+}
+
+/// The trail is a table — when, what, who it concerns, by whom, why — read a page at a time: "Show more" brings the
+/// next, and goes when there is no more. Before any change it says so.
+[Test(Desk)]
+void the_access_trail_is_a_table_read_a_page_at_a_time() {
+  Ui.Viewport(1440, 900);
+  Ui.SignInAs(DeskSam);
+  Ui.Visit("/people/trail");
+  Assert.Visible("No changes yet");
+  runas (DeskSam) {
+    var mo = User.Single(u => u.Email == "mo.haddad@desk.test");
+    GrantRole(mo, AppRole.Agent, "Joins the desk");
+    GrantRole(mo, AppRole.Lead, "Covers for Ada");
+    SignOutEverywhere(mo, "Lost laptop");
+  }
+  UnitOfWork.Commit();
+  Ui.Visit("/people/trail/two");
+  // Two at a time on this page: the newest two, and a way to the third.
+  Assert.Items("Access trail", 2);
+  Assert.Visible("Signed out everywhere", within: "Access trail");
+  Assert.Visible("Lost laptop", within: "Access trail");
+  Assert.Visible("Granted Lead", within: "Access trail");
+  Assert.Visible("Covers for Ada", within: "Access trail");
+  Assert.Hidden("Granted Agent");
+  // Each column is a field of the change: when, what, who it concerns, by whom, why.
+  foreach (var heading in ["When", "What", "Who it concerns", "By", "Why"]) { Assert.Visible(heading, within: "Access trail"); }
+  runas (DeskSam) {
+    var newest = AccessTrail(2);
+    Assert.Equal("Signed out everywhere", newest[0].Change);
+    Assert.Equal("Granted Lead", newest[1].Change);
+    Assert.Equal("Mo Haddad", newest[1].Person);
+    Assert.Equal("Sam Okafor", newest[1].By);
+    Assert.False(newest[1].Refused);
+  }
+  Ui.Click("Show more access changes");
+  Assert.Items("Access trail", 3);
+  Assert.Visible("Joins the desk", within: "Access trail");
+  Assert.Hidden("Show more");
+  Ui.Shot("access-trail");
+}
+
+/// On a phone each table is a list of records — nothing wider than the screen, however long a name is.
+[Test(Desk)]
+void the_tables_and_the_drawer_fit_a_phone_with_long_names() {
+  runas (DeskSam) {
+    var ada = User.Single(u => u.Email == "ada.moreno@desk.test");
+    IssueApiKey(ada, "Nightly export of every closed ticket to the finance warehouse, Europe and North America regions");
+    AddIntegration("Partner-system-connector-for-the-northern-region-warehouse-sync", AppRole.Agent);
+  }
+  UnitOfWork.Commit();
+  Ui.Viewport(390, 844);
+  Ui.SignInAs(DeskSam);
+  Ui.Visit("/people/keys");
+  Assert.Visible("Ada Moreno", within: "Keys in use");
+  Assert.NoOverflow();
+  Ui.Shot("api-keys-phone");
+  Ui.Visit("/people/trail");
+  Assert.Visible("Sam Okafor", within: "Access trail");
+  Assert.NoOverflow();
+  Ui.Shot("access-trail-phone");
+  Ui.Visit("/people");
+  Ui.Click("Ada Moreno");
+  Ui.Click("Add role");
+  Assert.Visible("Held", within: "Add role");
+  Assert.NoOverflow();
+  Ui.Shot("people-person-phone");
+}
+
+/// ⭐ AN APP WRITTEN AGAINST 0.10.0 STILL WORKS: `AddIntegration(name, role)` gives the role, and the app's own lists drawn
+/// with `ApiKeyRow` and `IntegrationRow` show each record and run the app's action when its button is pressed.
+[Test(Desk)]
+void a_page_written_against_0_10_0_lists_keys_and_integrations_a_row_each() {
+  runas (DeskSam) {
+    var ada = User.Single(u => u.Email == "ada.moreno@desk.test");
+    IssueApiKey(ada, "Nightly export");
+    var zapier = AddIntegration("Zapier", AppRole.Agent);
+    Assert.Equal(1, RoleGrant.Count(g => g.Member.Id == zapier.Id && g.Role == AppRole.Agent));
+    AddIntegration("Relay");
+  }
+  UnitOfWork.Commit();
+  Ui.Viewport(1440, 900);
+  Ui.SignInAs(DeskSam);
+  Ui.Visit("/people/keys/own");
+  Assert.Visible("Acts as Ada Moreno", within: "Our keys");
+  Assert.Visible("Agent", within: "Zapier");
+  Assert.Visible("Owned by Sam Okafor", within: "Zapier");
+  Assert.Visible("Holds no role", within: "Relay");
+  Assert.NoOverflow();
+  Ui.Click("Revoke Nightly export");
+  Assert.Visible("Asked to revoke Nightly export");
+  Ui.Click("Switch off Zapier");
+  Assert.Visible("Asked to switch off Zapier");
+  Ui.Click("Reassign Relay");
+  Assert.Visible("Asked to reassign Relay");
+}

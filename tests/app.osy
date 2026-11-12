@@ -11,5 +11,6 @@ app PeopleKitTests {
   use Osysharp.Invitations@2;
   use Osysharp.UserManagement@0;
   use Osysharp.Ui;
+  use Osysharp.Workflow;
 }
 

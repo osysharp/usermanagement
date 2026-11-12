@@ -25,9 +25,26 @@ void the_kit_announces_its_pages_beside_the_other_kits_sections() {
   Assert.Equal("People", links.Single(l => l.To == "/settings/people").Label);
   Assert.Equal("Access changes", links.Single(l => l.To == "/settings/access").Label);
   Assert.Equal("API keys", links.Single(l => l.To == "/settings/api-keys").Label);
-  // All three in the team's group. (Organizations is in this app too, but its tiers are the Organizations Accounts
-  // add-on's section, which this app does not use — so no second group.)
-  Assert.Equal("Team", string.Join(", ", links.Select(l => l.Group).Distinct()));
+  // The people under "Team"; the trail under "Security" — an auditor's page, not a team page; and the keys where THIS
+  // app placed them (`DeskPlacement`, tests/model/pages.osy): a group of its own, ahead of the kit's.
+  Assert.Equal("Team", links.Single(l => l.To == "/settings/people").Group);
+  Assert.Equal("Security", links.Single(l => l.To == "/settings/access").Group);
+  Assert.Equal("Developers", links.Single(l => l.To == "/settings/api-keys").Group);
+  Assert.Equal("Developers, Team, Security", string.Join(", ", links.Select(l => l.Group).Distinct()));
+}
+
+[Test(Settings)]
+void the_settings_nav_lists_each_page_under_the_group_it_was_placed_in() {
+  Ui.Viewport(1440, 900);
+  Ui.SignInAs(Lee);
+  Ui.Visit("/settings/access");
+  Assert.Visible("Developers", within: "Settings sections");
+  Assert.Visible("Security", within: "Settings sections");
+  Assert.Before("Developers", "Team");
+  Assert.Before("Team", "Security");
+  Assert.Visible("API keys", within: "Settings sections");
+  Assert.Visible("No changes yet");
+  Ui.Shot("settings-access");
 }
 
 [Test(Settings)]

@@ -47,7 +47,7 @@ public component PeopleManager(bool canInvite = true, bool invitations = true) {
   render {
     Row(gap: 0, align: Align.Stretch, w: "100%", minH: "100%") {
       if (open == Guid.Empty || Layout.AtLeast(Laptop)) {
-        Stack(gap: 4, grow: 1, minW: "0", maxW: "1120px", p: 5) {
+        Stack(gap: 4, grow: 1, minW: "0", maxW: "1120px", px: Space.SettingsPageX, py: 5) {
           PageHead("People", subtitle: "Who works here, what each may do, and who changed it.") {
             if (invites) { Button("Invite someone", onPress: StartInvite, tone: Tone.Primary, shortcut: "I"); }
           }
@@ -104,7 +104,7 @@ public component PeopleManager(bool canInvite = true, bool invitations = true) {
         }
       }
       if (open != Guid.Empty) {
-        Stack(gap: 0, w: Layout.AtLeast(Laptop) ? "420px" : "100%", shrink: 0, borderLW: 1, border: Colors.Border,
+        Stack(gap: 0, w: Layout.AtLeast(Laptop) ? Length.DrawerW : "100%", shrink: 0, borderLW: 1, border: Colors.DrawerLine,
               bg: Colors.Surface, minH: "100%") {
           PersonPanel(detail, Changed, Close);
         }
@@ -204,19 +204,34 @@ public string SignedInWhen(DateTime? at, DateTime now) {
 public component PersonPanel(PersonDetail d, Action onChanged, Action onClose) {
   string problem = "";
   string done = "";
-  RoleOption? giving = null;
+  RoleOffer? giving = null;
+  // The role being taken away, by the name the app gives it — "" while none is.
+  string removing = "";
+  // Whether "Add role" is open: every role the app offers, the held ones marked.
+  bool adding = false;
   string reason = "";
   string asking = "";
 
   action Reload() { onChanged(); }
   action Ask(string what) { asking = what; reason = ""; problem = ""; }
-  action StopAsking() { asking = ""; }
+  action AskRemove(string role) { removing = role; Ask("revoke"); }
+  action StopAsking() { asking = ""; removing = ""; }
+  action ToggleAdding() { adding = !adding; }
   action Run(string what) {
     problem = "";
     done = "";
     try {
       var p = Principal.Single(x => x.Id == d.Id);
       if (what == "grant" && giving != null && giving.Role != null) { GrantRole(p, giving.Role.Value, reason); done = $"{d.Name} is now {giving.Label}."; giving = null; }
+      if (what == "revoke") {
+        foreach (var held in d.Roles) {
+          if (held.Organization == "" && held.Removable && held.Label == removing && held.Role != null) {
+            RevokeRole(p, held.Role.Value, reason);
+            done = $"{held.Label} was taken from {d.Name}.";
+          }
+        }
+        removing = "";
+      }
       if (what == "deactivate") { Deactivate(p, reason); done = $"{d.Name} can no longer sign in, and was signed out everywhere."; }
       if (what == "reactivate") { Reactivate(p, reason); done = $"{d.Name} can sign in again."; }
       if (what == "reset") { ResetSecondFactor(p, reason); done = $"Two-step sign-in was reset for {d.Name}; they set it up again when they next sign in."; }
@@ -227,28 +242,29 @@ public component PersonPanel(PersonDetail d, Action onChanged, Action onClose) {
     }
     catch (Exception ex) { problem = ex.Message; }
   }
-  action Give(RoleOption c) { giving = c; Run("grant"); }
-  action Revoke(HeldRole r) {
-    problem = "";
-    done = "";
-    try {
-      var p = Principal.Single(x => x.Id == d.Id);
-      if (r.Role != null) { RevokeRole(p, r.Role.Value); done = $"{r.Label} was taken from {d.Name}."; }
-      Reload();
-    }
-    catch (Exception ex) { problem = ex.Message; }
+  action Give(RoleOffer c) { giving = c; Run("grant"); }
+
+  /// The app roles of theirs a manager may take away — the ones the danger area lists.
+  List<HeldRole> Removable() { return d.Roles.Where(r => r.Organization == "" && r.Removable).ToList(); }
+  /// What deactivating does, in one line — for a person, and for a program, which has keys and no sessions.
+  string DeactivateWords() {
+    return d.IsIntegration ? "Every key it holds is refused from its next request. What it did stays recorded under its name."
+                           : "They cannot sign in, and every session they have ends. Their work stays theirs.";
   }
 
   render {
-    Stack(gap: 5, p: 5, label: d.Name) {
+    Stack(gap: Space.DrawerGap, px: Space.DrawerX, py: Space.DrawerY, label: d.Name) {
       Row(gap: 3, align: Align.Start) {
-        Avatar(PersonInitials(d.Name), size: Size.Lg);
+        Avatar(PersonInitials(d.Name), size: Size.Md);
         Stack(gap: 1, grow: 1, minW: "0") {
-          Text(d.Name, fontSize: FontSize.Heading, fontWeight: FontWeight.Semibold, letterSpacing: "-0.01em");
-          Text(d.Email, color: Colors.TextMuted);
+          Text(d.Name, fontFamily: Font.DrawerFace, fontSize: FontSize.DrawerTitle, fontWeight: FontWeight.Semibold,
+               wordBreak: WordBreak.BreakWord);
+          Text(d.Email, fontSize: FontSize.Label, color: Colors.DetailText, wordBreak: WordBreak.BreakAll);
           Row(gap: 2, wrap: Wrapping.Wrap, pt: 1) {
             Badge(d.Active ? "Active" : "Deactivated", tone: d.Active ? Tone.Success : Tone.Ghost);
-            Badge(d.Verified ? "Address proven" : "Address not proven", tone: d.Verified ? Tone.Ghost : Tone.Warning);
+            // An integration's address reaches nobody, so there is nothing to prove.
+            if (d.IsIntegration) { Badge("Integration", tone: Tone.Ghost); }
+            else { Badge(d.Verified ? "Address proven" : "Address not proven", tone: d.Verified ? Tone.Ghost : Tone.Warning); }
             if (d.SecondFactorOn) { Badge("Two-step on", tone: Tone.Ghost); }
             else if (d.SecondFactorRequired) { Badge("Two-step required, not set up", tone: Tone.Warning); }
           }
@@ -259,35 +275,48 @@ public component PersonPanel(PersonDetail d, Action onChanged, Action onClose) {
       if (problem != "") { Alert(problem, tone: Tone.Danger); }
 
       Stack(gap: 2, label: "Roles") {
-        Text("Roles", fontWeight: FontWeight.Semibold);
-        if (d.Roles.Count == 0) { Text("No roles — they can sign in, and do nothing that needs one.", color: Colors.TextMuted, fontSize: FontSize.Caption); }
-        foreach (var r in d.Roles) {
-          Row(gap: 2, align: Align.Center, py: 1) {
-            Text(r.Label, fontWeight: FontWeight.Medium);
-            if (r.Organization != "") { Text("at " + r.Organization, color: Colors.TextMuted, fontSize: FontSize.Caption); }
-            Spacer();
-            if (r.Organization == "" && r.Removable) { Button("Remove", onPress: () => Revoke(r), tone: Tone.Ghost, size: Size.Sm); }
+        Row(gap: 2, align: Align.Center) {
+          Text("Roles", fontWeight: FontWeight.Semibold, grow: 1);
+          if (d.Offered.Count > 0) {
+            Button(adding ? "Done" : "Add role", onPress: ToggleAdding, size: Size.Sm,
+                   announceAs: adding ? "Done adding roles" : "Add role");
           }
         }
-        if (d.Grantable.Count > 0) {
-          Row(gap: 2, align: Align.Center, wrap: Wrapping.Wrap, label: "Give a role") {
-            Text("Give a role", fontSize: FontSize.Caption, color: Colors.TextMuted);
-            foreach (var c in d.Grantable) { Button(c.Label, onPress: () => Give(c), size: Size.Sm, tone: Tone.Ghost); }
+        if (d.Roles.Count == 0) {
+          Text(d.IsIntegration ? "Holds no role — its keys are accepted, and it can do nothing that needs one."
+                               : "No roles — they can sign in, and do nothing that needs one.",
+               color: Colors.TextMuted, fontSize: FontSize.Caption);
+        }
+        if (d.Roles.Count > 0) {
+          Row(gap: 1, wrap: Wrapping.Wrap, label: "Roles held") {
+            foreach (var r in d.Roles) { Badge(r.Organization != "" ? r.Label + " at " + r.Organization : r.Label, tone: RoleTone(r.Label)); }
+          }
+        }
+        // EVERY role the app offers, so what can be given is in view at once: the held ones say so, the rest are added
+        // here. Whether the app's own rules let THIS manager give one is the server's to say — it refuses with the reason.
+        if (adding) {
+          Stack(gap: 0, borderW: 1, border: Colors.ControlBorder, rounded: Radius.Md, overflow: Overflow.Hidden,
+                role: UiRole.List, label: "Add role") {
+            foreach (var o in d.Offered) { RoleOfferRow(o, () => Give(o), () => AskRemove(o.Label)); }
           }
         }
       }
 
       Stack(gap: 2, label: "Signing in") {
         Text("Signing in", fontWeight: FontWeight.Semibold);
-        Text(d.LastSignIn == null ? "Has never signed in." : "Last signed in " + d.LastSignIn.Value.ToString("d MMM yyyy, HH:mm") + ".",
+        Text(d.IsIntegration ? "An integration never signs in — it acts through its API keys."
+             : d.LastSignIn == null ? "Has never signed in." : "Last signed in " + d.LastSignIn.Value.ToString("d MMM yyyy, HH:mm") + ".",
              fontSize: FontSize.Caption, color: Colors.TextMuted);
-        Text(d.SignedIn == 0 ? "Not signed in anywhere right now." : d.SignedIn == 1 ? "Signed in on 1 browser or device right now." : $"Signed in on {d.SignedIn} browsers or devices right now.",
-             fontSize: FontSize.Caption, color: Colors.TextMuted);
-        Row(gap: 2, wrap: Wrapping.Wrap) {
-          if (d.SignedIn > 0) { Button("Sign out everywhere", onPress: () => Ask("signout"), size: Size.Sm); }
-          if (d.SignsInWithPassword && d.SecondFactorOn) { Button("Reset two-step sign-in", onPress: () => Ask("reset"), size: Size.Sm); }
-          if (d.Active) { Button("Deactivate", onPress: () => Ask("deactivate"), tone: Tone.Danger, size: Size.Sm); }
-          else { Button("Reactivate", onPress: () => Ask("reactivate"), size: Size.Sm); }
+        if (!d.IsIntegration) {
+          Text(d.SignedIn == 0 ? "Not signed in anywhere right now." : d.SignedIn == 1 ? "Signed in on 1 browser or device right now." : $"Signed in on {d.SignedIn} browsers or devices right now.",
+               fontSize: FontSize.Caption, color: Colors.TextMuted);
+        }
+        if (d.SignedIn > 0 || (d.SignsInWithPassword && d.SecondFactorOn) || !d.Active) {
+          Row(gap: 2, wrap: Wrapping.Wrap) {
+            if (d.SignedIn > 0) { Button("Sign out everywhere", onPress: () => Ask("signout"), size: Size.Sm); }
+            if (d.SignsInWithPassword && d.SecondFactorOn) { Button("Reset two-step sign-in", onPress: () => Ask("reset"), size: Size.Sm); }
+            if (!d.Active) { Button("Reactivate", onPress: () => Ask("reactivate"), size: Size.Sm); }
+          }
         }
       }
 
@@ -295,22 +324,41 @@ public component PersonPanel(PersonDetail d, Action onChanged, Action onClose) {
         Text("History", fontWeight: FontWeight.Semibold);
         if (d.History.Count == 0) { Text("No changes to their access yet.", color: Colors.TextMuted, fontSize: FontSize.Caption); }
         foreach (var e in d.History) {
-          Stack(gap: 0, py: 1, borderBW: 1, border: Colors.Border) {
+          Stack(gap: 0, py: 1, borderBW: 1, border: Colors.RowLine) {
             Row(gap: 2, align: Align.Center) {
-              Text(e.What, fontWeight: FontWeight.Medium, grow: 1);
-              Text(e.At.ToString("d MMM HH:mm"), fontFamily: Font.Mono, fontSize: FontSize.Caption, color: Colors.TextMuted);
+              Row(gap: 2, align: Align.Center, wrap: Wrapping.Wrap, grow: 1, minW: "0") {
+                Text(e.What, fontSize: FontSize.Label, fontWeight: FontWeight.Medium, wordBreak: WordBreak.BreakWord);
+                if (e.Refused) { Badge("Refused", tone: Tone.Danger); }
+              }
+              Text(e.At.ToString("d MMM HH:mm"), fontFamily: Font.Mono, fontSize: FontSize.Caption, color: Colors.TextMuted, shrink: 0);
             }
-            Text("by " + e.By + (e.Reason != "" ? " — “" + e.Reason + "”" : ""), fontSize: FontSize.Caption, color: Colors.TextMuted);
+            Text("by " + e.By + (e.Reason != "" ? " — “" + e.Reason + "”" : ""), fontSize: FontSize.Caption, color: Colors.TextMuted,
+                 wordBreak: WordBreak.BreakWord);
+            if (e.Refused && e.Refusal != "") { Text(e.Refusal, fontSize: FontSize.Caption, color: Colors.DangerInk, wordBreak: WordBreak.BreakWord); }
+          }
+        }
+      }
+
+      // What takes something away from them, in ONE place and one weight: each says what follows, and each asks first.
+      if (d.Active || Removable().Count > 0) {
+        DangerArea() {
+          foreach (var r in Removable()) {
+            DangerAction("Remove " + r.Label, "They lose what " + r.Label + " lets them do, at once.", () => AskRemove(r.Label));
+          }
+          if (d.Active) {
+            DangerAction("Deactivate", DeactivateWords(), () => Ask("deactivate"), announceAs: "Deactivate " + d.Name);
           }
         }
       }
     }
     if (asking != "") {
       Dialog(asking == "reset" ? "Reset two-step sign-in?" : asking == "deactivate" ? "Deactivate " + d.Name + "?"
+             : asking == "revoke" ? "Remove " + removing + " from " + d.Name + "?"
              : asking == "reactivate" ? "Reactivate " + d.Name + "?" : "Sign " + d.Name + " out everywhere?",
              onDismiss: StopAsking,
              subtitle: asking == "reset" ? "Their authenticator app and recovery codes stop working; they set it up again at their next sign-in. Do this only when you are sure it is them asking."
-               : asking == "deactivate" ? "They cannot sign in, and every session they have ends. Their work stays theirs."
+               : asking == "deactivate" ? DeactivateWords()
+               : asking == "revoke" ? "They lose what " + removing + " lets them do, at once. You can give it back."
                : asking == "reactivate" ? "They can sign in again with the password they had."
                : "Every session they have ends, on every device. They can sign in again.") {
         Field(asking == "reset" ? "Why — who asked, and how you knew it was them" : "Why (recorded with the change)", value: reason,
@@ -318,30 +366,79 @@ public component PersonPanel(PersonDetail d, Action onChanged, Action onClose) {
         if (problem != "") { Alert(problem, tone: Tone.Danger); }
         Row(gap: 2, justify: Justify.End) {
           Button("Cancel", onPress: StopAsking, tone: Tone.Ghost);
-          Button(asking == "reset" ? "Reset" : asking == "deactivate" ? "Deactivate" : asking == "reactivate" ? "Reactivate" : "Sign out everywhere",
-                 onPress: () => Run(asking), tone: asking == "deactivate" ? Tone.Danger : Tone.Primary);
+          Button(asking == "reset" ? "Reset" : asking == "deactivate" ? "Deactivate" : asking == "revoke" ? "Remove role"
+                 : asking == "reactivate" ? "Reactivate" : "Sign out everywhere",
+                 onPress: () => Run(asking), tone: asking == "deactivate" || asking == "revoke" ? Tone.Danger : Tone.Primary);
         }
       }
     }
   }
 }
 
-/// The app-wide trail of who changed whose access, newest first — an auditor's page.
-[Composable]
-public component AccessTrailList(int take = 100) {
-  List<AccessEvent> trail = [];
-  on mount { trail = AccessTrail(take); }
+/// One role in "Add role": what the app calls it and what it is for — and "Held" with a way to take it away, or Add.
+[Composable, Part]
+component RoleOfferRow(RoleOffer offer, Action onAdd, Action onRemove) {
+  variants { base { BorderBW = 1; Border = Colors.RowLine; } }
   render {
-    Stack(gap: 0, role: (trail.Count == 0) ? UiRole.Group : UiRole.List, label: "Access changes") {
-      if (trail.Count == 0) { EmptyState("No changes yet", body: "Every change to somebody's access is listed here, with who made it and why."); }
-      foreach (var e in trail) {
-        Row(gap: 3, align: Align.Start, py: 2, borderBW: 1, border: Colors.Border, role: UiRole.ListItem, label: e.What) {
-          Text(e.At.ToString("d MMM HH:mm"), fontFamily: Font.Mono, fontSize: FontSize.Caption, color: Colors.TextMuted, w: "96px", shrink: 0);
-          Stack(gap: 0, grow: 1, minW: "0") {
-            Text(e.What);
-            Text("by " + e.By + (e.Reason != "" ? " — “" + e.Reason + "”" : ""), fontSize: FontSize.Caption, color: Colors.TextMuted);
-          }
+    Row(gap: 3, align: Align.Center, px: 3, py: 2, role: UiRole.ListItem, label: offer.Label) {
+      Stack(gap: 0, grow: 1, minW: "0") {
+        Row(gap: 2, align: Align.Center, wrap: Wrapping.Wrap) {
+          Text(offer.Label, fontSize: FontSize.Label, fontWeight: FontWeight.Medium);
+          if (offer.Held) { Badge("Held", tone: Tone.Success); }
         }
+        if (offer.Description != "") { Text(offer.Description, fontSize: FontSize.Caption, color: Colors.MetaText, wordBreak: WordBreak.BreakWord); }
+      }
+      if (offer.Held) { DangerButton("Remove", onRemove, "Remove " + offer.Label); }
+      else { Button("Add", onPress: onAdd, size: Size.Sm, announceAs: "Add " + offer.Label); }
+    }
+  }
+}
+
+/// The app-wide trail of who changed whose access, newest first — an auditor's page.
+/// A table: when, what, who it concerns, by whom and why — `take` at a time, with "Show more" under it, and never more
+/// than `AccessTrailMost()`. A change a rule refused is marked "Refused", with the rule's reason under it.
+/// In a test it is the region "Access trail": `Assert.Visible("Granted Lead", within: "Access trail")`.
+[Composable]
+public component AccessTrailList(int take = 50) {
+  List<AccessEvent> trail = [];
+  // How many are asked for; one more is read, which is how the table knows there are more to show.
+  int shown = take;
+  bool more = false;
+  bool loaded = false;
+  string problem = "";
+  string[] columns = ["When", "What", "Who it concerns", "By", "Why"];
+  string cols = "124px minmax(0, 1.5fr) minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.4fr)";
+  // The most the page ever reads (`AccessTrailMost()`), asked with the first read.
+  int most = 0;
+
+  on mount { Load(); }
+
+  action Load() {
+    problem = "";
+    try {
+      most = AccessTrailMost();
+      var read = AccessTrail(shown + 1);
+      more = read.Count > shown && shown < most;
+      trail = read.Take(shown).ToList();
+    } catch (Exception ex) { problem = ex.Message; }
+    loaded = true;
+  }
+  action ShowMore() { shown = Math.Min(shown + take, most); Load(); }
+
+  render {
+    Stack(gap: 3, w: "100%") {
+      RecordTable("Access trail", columns, cols, loaded: loaded, empty: trail.Count == 0, problem: problem, onRetry: Load) {
+        if (trail.Count == 0) {
+          Box(p: 5) { EmptyState("No changes yet", body: "Every change to somebody's access is listed here, with who made it and why."); }
+        }
+        foreach (var e in trail) {
+          RecordRow(columns, [e.At.ToString("d MMM yyyy HH:mm"), e.Change, e.Person, e.By, e.Reason], cols, strong: 1, actions: false,
+                    mark: e.Refused ? "Refused" : "", markTone: Tone.Danger, note: e.Refused ? e.Refusal : "", noteTone: Tone.Danger);
+        }
+      }
+      if (more) { Row { Button("Show more", onPress: ShowMore, size: Size.Sm, announceAs: "Show more access changes"); } }
+      else if (loaded && most > 0 && trail.Count >= most) {
+        Text($"Showing the newest {most} changes.", fontSize: FontSize.Caption, color: Colors.MetaText);
       }
     }
   }

@@ -188,6 +188,25 @@ void a_manager_grants_and_revokes_an_offered_role_and_each_change_is_recorded() 
 From [`tests/access.test.osy`](tests/access.test.osy).
 
 ```osy
+using Osysharp.UserAccounts;
+using Osysharp.UserManagement;
+
+[Test(ActorTeam)]
+void the_access_change_run_may_not_make_a_persons_account() {
+  runas (AccessChanger) {
+    Assert.Denied(() => {
+      new User { Email = "rogue@desk.test", DisplayName = "Rogue", PasswordHash = Security.HashPassword("correct-horse-9"),
+                 EmailVerifiedAt = DateTime.UtcNow };
+      UnitOfWork.Commit();
+    });
+  }
+  Assert.Equal(0, User.Count(u => u.Email == "rogue@desk.test"));
+}
+```
+
+From [`tests/actor.test.osy`](tests/actor.test.osy).
+
+```osy
 using Osysharp.Identity;
 using Osysharp.UserAccounts;
 using Osysharp.UserManagement;
@@ -222,36 +241,6 @@ void a_key_acts_as_the_person_it_was_issued_to_and_a_revoked_key_is_refused_at_o
 ```
 
 From [`tests/api-keys.test.osy`](tests/api-keys.test.osy).
-
-```osy
-using Osysharp.Identity;
-using Osysharp.UserAccounts;
-using Osysharp.Organizations;
-using Osysharp.Invitations;
-using Osysharp.UserManagement;
-using Osysharp.Mail;
-using Osysharp.Workflow;
-
-[Test(RuledDesk)]
-void an_integration_is_never_given_a_role_the_apps_rule_keeps_for_people() {
-  runas (Sam) {
-    var bot = AddIntegration("Export bot", AppRole.Agent, reason: "Nightly export");
-    // Refused AT ONCE, to the manager who asked, in the app's own words — not a run that fails later.
-    var refusal = Assert.Throws(() => GrantRole(bot, AppRole.Auditor, "Reads the books"));
-    Assert.Contains("Auditor is a person's role — an integration is never given it.", refusal.Message);
-    // …and the trail records the change as refused, with that reason.
-    var refused = AccessChange.Single(c => c.Person == bot && c.Role == AppRole.Auditor);
-    Assert.Equal(AccessChangeState.Refused, refused.State);
-    Assert.Contains("an integration is never given it", refused.Refusal ?? "");
-    // …and a person is given it by the same route.
-    GrantRole(Account("mo@desk.test"), AppRole.Auditor, "Joins the audit");
-  }
-  Assert.Equal(1, Holders(AppRole.Auditor));
-  runas (Sam) { Assert.True(RoleGrant.Any(g => g.Role == AppRole.Auditor && g.Member.Email == "mo@desk.test")); }
-}
-```
-
-From [`tests/app-rules.test.osy`](tests/app-rules.test.osy).
 
 ## Learn more
 

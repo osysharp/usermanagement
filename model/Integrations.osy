@@ -37,9 +37,12 @@ public entity Integration : Principal {
   security {
     // Seen as every account is — its name is on what it does.
     allow read when IsAuthenticated || IsAuthenticator;
-    // Made and changed by its access change's run alone (the system). Nobody edits it — a manager adds a new one
+    // Made and changed by its access change's run alone (its actor, `AccessChanger`). Nobody edits it — a manager adds a new one
     // instead, and it cannot edit itself with its own key.
     deny update;
+    // …its access change's run: it makes one, gives it to another owner, switches it off and on, and keeps its keys.
+    allow create when user == Actor.Of<AccessChanger>();
+    allow update when user == Actor.Of<AccessChanger>();
   }
 }
 
@@ -126,7 +129,7 @@ string ReassignProblem(Integration? integration, Principal owner) {
   return "";
 }
 
-/// Make the integration a change names and give it its role, when it names one (as the system — its run): in the
+/// Make the integration a change names and give it its role, when it names one (as its run's actor, `AccessChanger`): in the
 /// change's organisation when it names one, and then nothing across the app; else across the app, telling the app the
 /// role was given.
 void MakeIntegration(AccessChange change) {

@@ -199,3 +199,15 @@ void a_page_written_against_0_10_0_lists_keys_and_integrations_a_row_each() {
   Ui.Click("Reassign Relay");
   Assert.Visible("Asked to reassign Relay");
 }
+
+/// ⭐ THE PEOPLE PAGE KEEPS ITS OWN WIDTH — its list and its head's words are 1120px at a desk's width, as they always were; the
+/// settings page's measure (`Length.SettingsPageW`, 880px) is not its. The head's band spans the whole page, wider than that. Needs `--pixels`: under plain `osy test` the measure reports NOT CHECKED.
+[Test(Desk)]
+void the_people_page_is_as_wide_as_its_own_token_not_the_settings_pages() {
+  Ui.Viewport(1600, 900);
+  Ui.SignInAs(DeskSam);
+  Ui.Visit("/people");
+  Ui.Visit("/people-width");
+  Assert.SameWidth("People column", "Design page");
+  Assert.Wider("People page", "Design page");
+}

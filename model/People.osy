@@ -89,6 +89,9 @@ public enum AccessChangeState { Requested, Applied, Refused }
 public entity AccessChange {
   [Required] Principal Person;
   [Required] Principal By;
+  /// Who the platform recorded as making the change — the manager who asked. Its run applies it as its own actor, and
+  /// what the manager decided is judged for them (`ApplyAccessChange`, `[JudgedFor]`).
+  [CreatedBy] Guid? MadeBy;
   AccessChangeKind Kind;
   role? Role;
   Organization? Organization;
@@ -113,23 +116,50 @@ public entity AccessChange {
     deny create where By != user;
     // `Role != null` first: a change with no role is unknown to `Role == …`, and an unknown deny applies.
     deny create where Role != null && Role == role.Authenticator;
+    // Its run reads it and writes what became of it — and nothing a manager decided.
+    allow read when user == Actor.Of<AccessChanger>();
+    allow update Refusal, Integration when user == Actor.Of<AccessChanger>();
   }
 }
+
+/// Who an access change's run writes as: what the change needs and nothing else — the questions below, which the kits
+/// it is built on ask, answered for it alone.
+[Actor]
+public class AccessChanger {
+  public static User Principal => new User { Email = "access-changer@actors.osyrin.invalid", DisplayName = "User manager" };
+}
+
+policy Osysharp.Identity.GrantsRoles += user == Actor.Of<AccessChanger>();
+policy Osysharp.Identity.RevokesRoles += user == Actor.Of<AccessChanger>();
+policy Osysharp.Identity.MakesAccounts += user == Actor.Of<AccessChanger>();
+policy Osysharp.Identity.DeactivatesAccounts += user == Actor.Of<AccessChanger>();
+policy Osysharp.Identity.KeepsApiKeys += user == Actor.Of<AccessChanger>();
+policy Osysharp.UserAccounts.DeactivatesAccounts += user == Actor.Of<AccessChanger>();
+policy Osysharp.UserAccounts.KeepsApiKeys += user == Actor.Of<AccessChanger>();
+policy ResetsSecondFactor += user == Actor.Of<AccessChanger>();
+policy SendsAppMail += user == Actor.Of<AccessChanger>();
+policy ManagesMemberships += user == Actor.Of<AccessChanger>();
+policy RemovesMemberships += user == Actor.Of<AccessChanger>();
 
 workflow AccessChangeFlow {
   Tracks    = AccessChange.State;
   Autostart = true;
   Initial   = Requested;
+  RunsAs    = AccessChanger;
+  ActsFor   = Nobody;
 
-  // Applied in the commit that records it: the record and the change land together or not at all. The run writes as the
-  // system — which is what lets it change what no person may write directly (whether an account may sign in, its second
-  // factor) — so everything the change is allowed to do is decided HERE, not by the caller.
+  // ⚑ ITS OWN ACTOR, ACTING FOR NOBODY. The manager is asked when they make the change (`ManagesPeople`,
+  //   the floor above); what they decided keeps its judgement for them (`ApplyAccessChange`, `[JudgedFor(change.MadeBy)]`:
+  //   the app's denies, asked about the manager). The run itself does what no person may write directly — whether an
+  //   account may sign in, its second factor, its key slots — and holds exactly that (`AccessChanger`'s questions above).
+  //   Applied in the commit that records it: the record and the change land together or not at all. Everything the
+  //   change is allowed to do is decided HERE, not by the caller.
   state Requested {
     enter {
       var c = this.Item;
       var problem = AccessProblem(c.Person, c.By, c.Kind, c.Role, c.Organization, c.Reason);
       // A key change is checked against the account itself — its key slots, whether it may sign in — which only the
-      // run (the system) can read.
+      // run (its actor) can read.
       if (problem == "" && (c.Kind == AccessChangeKind.ApiKeyIssued || c.Kind == AccessChangeKind.ApiKeyRevoked)) {
         problem = ApiKeyProblem(c);
       }
@@ -163,6 +193,12 @@ workflow AccessChangeFlow {
 /// has one to reset; an organisation change names its organisation.
 [SuppressWarning("cost-unbounded-read")]   // the active holders of the one role the app must keep — its admins
 public string AccessProblem(Principal person, Principal by, AccessChangeKind kind, role? r, Organization? org, string reason) {
+  // The app's own accounts — a workflow's actor (this kit's `AccessChanger` too), an agent's — hold what the app declares
+  // for them, and nobody changes that here: a key issued to the access-change run's own account would let its holder
+  // write everything the run may. Nor does one answer for an integration. SECURITY-INVARIANT(an-actors-account-never-signs-in-with-a-key).
+  if (Actor.PrincipalIds().Contains(person.Id)) {
+    return "That is the app's own account (a workflow's or an agent's) — its access is what the app declares, and nobody changes it here.";
+  }
   var setup = App.Setting<PeopleSetup>();
   if (setup.ReasonRequired && reason.Trim() == "") { return "Say why — every change to somebody's access is recorded with its reason."; }
   var needsRole = kind == AccessChangeKind.RoleGranted || kind == AccessChangeKind.RoleRevoked
@@ -219,9 +255,11 @@ public string AccessProblem(Principal person, Principal by, AccessChangeKind kin
   return "";
 }
 
-/// Apply `change`, which `AccessProblem` has passed — as the system (its run), so what no person may write directly
-/// (whether an account may sign in, its second factor) is written here and nowhere else.
+/// Apply `change`, which `AccessProblem` has passed — as its run's actor (`AccessChanger`), so what no person may write
+/// directly (whether an account may sign in, its second factor) is written here and nowhere else; and judged for the
+/// manager who made it — the app's own rules (`deny create where Role == X` on a role grant) are asked about them.
 [SuppressWarning("cost-unbounded-read")]   // one person's grants of one role
+[JudgedFor(change.MadeBy)]
 void ApplyAccessChange(AccessChange change) {
   var person = change.Person;
   // The app is told (`RolesSetup.Events`) in this same write, so what it does about a role — a desk putting a new agent

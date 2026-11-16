@@ -82,3 +82,18 @@ void two_keys_at_most_and_deactivating_a_person_revokes_theirs() {
                  Assert.Throws<ValidationException>(() => IssueApiKey(ada, "Again")).Message);
   }
 }
+
+// The app's own accounts — a workflow's actor, an agent's — are nobody's to change: a key issued to the access-change
+// run's own account would let whoever holds it write everything that run may (give any role, put a key on anyone).
+[Test(Team)]
+void nobody_issues_a_key_to_or_changes_the_access_of_the_apps_own_accounts() {
+  var changer = Actor.Of<AccessChanger>();
+  runas (Sam) {
+    Assert.Contains("the app's own account",
+                    Assert.Throws<ValidationException>(() => IssueApiKey(changer, "Mine now")).Message);
+    Assert.Contains("the app's own account",
+                    Assert.Throws<ValidationException>(() => Deactivate(changer, "Stop it")).Message);
+    Assert.Equal(0, ApiKey.Count(k => k.Holder == changer));
+    Assert.Equal(0, AccessChange.Count(c => c.Person == changer));
+  }
+}

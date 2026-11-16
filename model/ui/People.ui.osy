@@ -47,10 +47,13 @@ public component PeopleManager(bool canInvite = true, bool invitations = true) {
   render {
     Row(gap: 0, align: Align.Stretch, w: "100%", minH: "100%") {
       if (open == Guid.Empty || Layout.AtLeast(Laptop)) {
-        Stack(gap: 4, grow: 1, minW: "0", maxW: "1120px", px: Space.SettingsPageX, py: 5) {
-          PageHead("People", subtitle: "Who works here, what each may do, and who changed it.") {
+        // The head is a band across the whole area (the page-head tokens'), its words in the page's own measure
+        // (`Length.PeoplePageW`); the list keeps that measure and the page's sides below it.
+        Stack(gap: 0, grow: 1, minW: "0", label: "People page") {
+          PageHead("People", subtitle: "Who works here, what each may do, and who changed it.", column: PageColumn.People) {
             if (invites) { Button("Invite someone", onPress: StartInvite, tone: Tone.Primary, shortcut: "I"); }
           }
+          Stack(gap: 4, w: "100%", maxW: Length.PeoplePageW, px: Space.SettingsPageX, pt: 4, pb: 5, label: "People column") {
           // ── the list: a dense table on its own surface, its toolbar above it ──────────────────────────────────
           // ⚑ THE SWITCHBOARD FLOOR'S DENSE LIST (the helpdesk queue's): a compact filter rather than a page-wide
           //   field, a header row in caption type, 44px rows with an avatar, roles as chips, and the last sign-in in
@@ -100,6 +103,7 @@ public component PeopleManager(bool canInvite = true, bool invitations = true) {
               Text("Waiting invitations", fontWeight: FontWeight.Semibold);
               InvitationList(canChange: invites);
             }
+          }
           }
         }
       }

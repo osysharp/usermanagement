@@ -95,8 +95,15 @@ app.Apis = [
 public string WhoAmI() { return Session.CurrentUser == null ? "" : Session.CurrentUser!.Email; }
 
 /// A team of the app's own people.
+///
+/// The app's own read rules on its own kind of organisation bind every reader — the access change's run too, which
+/// writes as its own actor (`AccessChanger`) and must read the organisation it changes somebody's access in. So the app
+/// says so, by name, here and on `Customer`.
 entity Team : Organization {
-  security { allow read, create, update when IsAdmin; }
+  security {
+    allow read, create, update when IsAdmin;
+    allow read when user == Actor.Of<AccessChanger>();
+  }
 }
 
 // ── a customer's own rows — the tenant shape the Organizations kit recommends: every row names its customer, and its
@@ -109,6 +116,7 @@ entity Customer : Organization {
   security {
     allow read, create, update when IsAdmin;
     allow read when IsAuthenticated where IsMemberOf(this);
+    allow read when user == Actor.Of<AccessChanger>();
   }
 }
 

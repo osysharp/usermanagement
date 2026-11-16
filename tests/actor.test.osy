@@ -1,0 +1,22 @@
+// An access change's run writes as its own actor, `AccessChanger`, which holds what the change writes and nothing more
+// — roles, whether an account may sign in, its second factor, its key slots, integrations' accounts.
+// Anything else is refused it.
+
+using Osysharp.UserAccounts;
+using Osysharp.UserManagement;
+
+[TestFixture]
+void ActorTeam() { }
+
+// An access change never makes a person's account — people arrive by invitation or sign-up, not by a manager's change.
+[Test(ActorTeam)]
+void the_access_change_run_may_not_make_a_persons_account() {
+  runas (AccessChanger) {
+    Assert.Denied(() => {
+      new User { Email = "rogue@desk.test", DisplayName = "Rogue", PasswordHash = Security.HashPassword("correct-horse-9"),
+                 EmailVerifiedAt = DateTime.UtcNow };
+      UnitOfWork.Commit();
+    });
+  }
+  Assert.Equal(0, User.Count(u => u.Email == "rogue@desk.test"));
+}

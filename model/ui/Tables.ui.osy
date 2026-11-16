@@ -128,7 +128,7 @@ component TableHeading(string title, string description = "") {
   render {
     Row(gap: 3, align: Align.End, wrap: Wrapping.Wrap, w: "100%") {
       Stack(gap: 1, grow: 1, minW: "0", basis: "280px") {
-        Text(title, fontSize: FontSize.Subhead, fontWeight: FontWeight.Headings);
+        Text(title, fontSize: FontSize.PageSectionTitle, fontWeight: FontWeight.Headings);
         if (description != "") { Text(description, fontSize: FontSize.Label, color: Colors.TextMuted, maxW: "680px"); }
       }
       Row(gap: 2, shrink: 0) { Slot; }

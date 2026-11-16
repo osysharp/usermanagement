@@ -43,7 +43,11 @@ public entity ApiKey {
     // A manager issues a key — in their own name. Nobody edits or deletes one: its run writes it.
     allow create when ManagesPeople;
     deny create where IssuedBy != user;
-    deny read PendingHash;
+    // Nobody reads the pending hash but the run that moves it onto the account.
+    deny read PendingHash when user != Actor.Of<AccessChanger>();
+    // …its access change's run puts it on the account (its slot, the hash moved off) and takes it off.
+    allow read when user == Actor.Of<AccessChanger>();
+    allow update Slot, PendingHash, RevokedAt, RevokedBy when user == Actor.Of<AccessChanger>();
   }
 }
 
@@ -99,7 +103,7 @@ AccessChange RecordKeyChange(Principal person, AccessChangeKind kind, ApiKey key
 }
 
 /// "" when a key change can be applied, else why not — a key to issue is the person's and they may sign in; a key to
-/// revoke is still valid. Asked by the run, which reads the account as the system.
+/// revoke is still valid. Asked by the run, which reads the account as its actor (`AccessChanger`).
 string ApiKeyProblem(AccessChange change) {
   var k = change.Key;
   if (k == null) { return "Say which key."; }
@@ -116,7 +120,7 @@ string ApiKeyProblem(AccessChange change) {
   return "";
 }
 
-/// Put an issued key's hash on its holder's account (as the system — the run), in the first free slot.
+/// Put an issued key's hash on its holder's account (as the run's actor, `AccessChanger`), in the first free slot.
 void ApplyKeyIssued(AccessChange change) {
   var k = change.Key!;
   var p = change.Person;

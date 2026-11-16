@@ -46,7 +46,7 @@ public List<PersonRow> PeopleList(string search = "", bool includeInactive = tru
   var q = search.Trim().ToLower();
   var directory = App.Setting<PeopleSetup>().Directory;
   var listed = directory.Listed();
-  var hidden = directory.Hidden();
+  var hidden = NotListed(directory);
   var people = listed != null
     ? listed.Where(p => !hidden.Contains(p.Id) && (includeInactive || p.IsActive) && (q == "" || p.Email.ToLower().Contains(q) || p.DisplayName.ToLower().Contains(q)))
         .OrderBy(x => x.DisplayName).ThenBy(x => x.Email).Take(PeopleShown()).ToList()
@@ -78,6 +78,16 @@ public List<PersonRow> PeopleList(string search = "", bool includeInactive = tru
   return rows;
 }
 
+/// The accounts the list never shows, by id: the directory's own `Hidden()`, and every declared actor's — a workflow's run, an
+/// agent, this kit's `AccessChanger`, the app's own robots — which are the app's programs, not its people. Which accounts are
+/// actors is the platform's answer (`Actor.PrincipalIds()`, the compiled catalogue the sign-in doors ask), never an address.
+/// SECURITY-INVARIANT(an-actor-account-is-known-by-its-id).
+List<Guid> NotListed(PeopleDirectory directory) {
+  var left = Actor.PrincipalIds();
+  foreach (var id in directory.Hidden()) { left.Add(id); }
+  return left;
+}
+
 /// Everybody with an account whose name or address contains `q` ("" for all), by name — the first `PeopleShown()` — but
 /// for the accounts `hidden` names, which the database leaves out.
 List<Principal> Everybody(string q, bool includeInactive, List<Guid> hidden) {
@@ -93,10 +103,10 @@ List<Principal> Everybody(string q, bool includeInactive, List<Guid> hidden) {
         .OrderBy(x => x.DisplayName).ThenBy(x => x.Email).Take(PeopleShown()).ToList();
 }
 
-/// Everybody with an account whose name or address contains `q` ("" for all), by name, hiding nobody. Kept from 0.7.0, so an
-/// app written against it still compiles.
+/// Everybody with an account whose name or address contains `q` ("" for all), by name — people only: the declared actors'
+/// accounts are left out. Kept from 0.7.0, so an app written against it still compiles.
 List<Principal> Everybody(string q, bool includeInactive) {
-  return Everybody(q, includeInactive, new List<Guid>());
+  return Everybody(q, includeInactive, Actor.PrincipalIds());
 }
 
 /// The app roles the people `ids` hold.

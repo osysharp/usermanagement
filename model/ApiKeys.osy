@@ -192,7 +192,7 @@ public List<ApiKeyLine> ApiKeyLines(DateTime now, bool withRevoked = false) {
 public List<Principal> KeyHolders() {
   var directory = App.Setting<PeopleSetup>().Directory;
   var listed = directory.Listed();
-  var hidden = directory.Hidden();
+  var hidden = NotListed(directory);
   var people = listed != null
     ? listed.Where(p => p.IsActive && !hidden.Contains(p.Id)).OrderBy(p => p.DisplayName).Take(PeopleShown()).ToList()
     : Everybody("", false, hidden);

@@ -149,3 +149,10 @@ entity DeskNotice {
     allow read when IsAgent;
   }
 }
+
+/// The app's own robot — a declared actor with a real address, as an app's program may have. The people list
+/// leaves it out because the platform's catalogue says it is an actor, not because of where its mail goes.
+[Actor]
+public class NightlyReport {
+  public static User Principal => new User { Email = "reports@desk.test", DisplayName = "Nightly report" };
+}

@@ -31,7 +31,9 @@ public class PeopleSetup {
   public PeopleDirectory Directory = new PeopleDirectory();
 }
 
-/// Who the user manager lists — everybody with an account by default. Derive and override `Listed` to name fewer, READ
+/// Who the user manager lists — everybody with an account by default, but never a declared actor's (a workflow's run, an
+/// agent: the app's programs, left out by `Actor.PrincipalIds()` whatever `Listed` and `Hidden` say). Derive and override
+/// `Listed` to name fewer, READ
 /// by a query the database answers, so the people left out are never read at all:
 ///
 ///     public class TeamOnly : PeopleDirectory {

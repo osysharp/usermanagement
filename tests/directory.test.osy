@@ -35,6 +35,26 @@ void the_list_shows_each_persons_roles_by_the_apps_names_and_whether_two_step_is
   }
 }
 
+/// A declared actor's account is the app's program, not a person: the list leaves out every one — this kit's own
+/// (`AccessChanger`), another kit's (`InvitationRun`), and the app's robot with a real address — searched for or not, and
+/// they are never offered a key. Asked of the platform's catalogue, never of an address.
+[Test(Directory)]
+void the_list_leaves_out_every_declared_actors_account() {
+  var robot = Actor.Of<NightlyReport>();
+  var changer = Actor.Of<AccessChanger>();
+  var invitations = Actor.Of<Osysharp.Invitations.InvitationRun>();
+  runas (Sam) {
+    var listed = PeopleList().Select(r => r.Id).ToList();
+    Assert.Equal(3, listed.Count);
+    Assert.False(listed.Contains(robot.Id));
+    Assert.False(listed.Contains(changer.Id));
+    Assert.False(listed.Contains(invitations.Id));
+    Assert.Equal(0, PeopleList("report").Count);
+    Assert.Equal(0, PeopleList("actors.osyrin").Count);
+    Assert.False(KeyHolders().Any(p => p.Id == robot.Id || p.Id == changer.Id || p.Id == invitations.Id));
+  }
+}
+
 [Test(Directory)]
 void the_list_searches_names_and_addresses_and_can_leave_out_the_deactivated() {
   runas (Sam) {

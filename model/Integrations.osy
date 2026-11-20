@@ -98,10 +98,9 @@ internal Integration AddIntegrationHolding(string name, role? r, Principal? owne
   var problem = AccessProblem(answers, me!, AccessChangeKind.IntegrationAdded, r, organization, reason);
   if (problem != "") { throw new ValidationException(problem); }
   var made = new AccessChange { Person = answers, By = me!, Kind = AccessChangeKind.IntegrationAdded, Role = r,
-                                Organization = organization, IntegrationName = shown, Reason = reason.Trim(),
-                                At = DateTime.UtcNow };
+                                Organization = organization, IntegrationName = shown, Reason = reason.Trim() };
   UnitOfWork.Commit();
-  ThrowIfRefused(made.Id, "The integration was not added.");
+  ThrowUnlessApplied(made.Id, "The integration was not added.");
   return AccessChange.Single(c => c.Id == made.Id).Integration!;
 }
 
@@ -116,9 +115,9 @@ public AccessChange ReassignIntegration(Integration integration, Principal owner
   if (problem != "") { throw new ValidationException(problem); }
   var made = new AccessChange { Person = owner, By = me!, Kind = AccessChangeKind.IntegrationReassigned,
                                 Integration = integration, IntegrationName = integration.DisplayName,
-                                Reason = reason.Trim(), At = DateTime.UtcNow };
+                                Reason = reason.Trim() };
   UnitOfWork.Commit();
-  ThrowIfRefused(made.Id, "The integration was not reassigned.");
+  ThrowUnlessApplied(made.Id, "The integration was not reassigned.");
   return AccessChange.Single(c => c.Id == made.Id);
 }
 

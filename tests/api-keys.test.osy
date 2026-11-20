@@ -40,6 +40,32 @@ void a_key_acts_as_the_person_it_was_issued_to_and_a_revoked_key_is_refused_at_o
   }
 }
 
+// A KEY FOR SOME TOOL SETS (KEYSCOPE D-KEYSCOPE-7): `IssueApiKey(…, tools)` mints a key that reaches only those sets — on the REST
+// API the function of its catalog (`/me`), never an entity route; over MCP that catalog's tool alone — where the same person's key for
+// every set reads the desk's notices too. The record says the sets. SECURITY-INVARIANT(a-scoped-key-reaches-only-its-sets).
+[Test(Team)]
+void a_key_issued_for_some_tool_sets_reaches_only_them() {
+  var ada = Person("ada@desk.test");
+  IssuedApiKey scoped = new IssuedApiKey();
+  IssuedApiKey whole = new IssuedApiKey();
+  runas (Sam) {
+    scoped = IssueApiKey(ada, "Who-am-I bot", "", "me");
+    whole = IssueApiKey(ada, "Everything");
+  }
+  Assert.EndsWith("~me", scoped.Key);
+  Assert.Contains("ada@desk.test", Me(scoped.Key));
+  Assert.Equal(404, Api.Get("/api/rest/v1/team/entities/DeskNotice", apiKey: scoped.Key).StatusCode);
+  Assert.Equal(200, Api.Get("/api/rest/v1/team/entities/DeskNotice", apiKey: whole.Key).StatusCode);
+  var listed = new List<string>();
+  foreach (var t in Mcp.List(apiKey: scoped.Key).Tools) { listed.Add(t.Name); }
+  Assert.Contains("WhoAmI", listed);
+  Assert.DoesNotContain("query_DeskNotice", listed);
+  var all = new List<string>();
+  foreach (var t in Mcp.List(apiKey: whole.Key).Tools) { all.Add(t.Name); }
+  Assert.Contains("query_DeskNotice", all);
+  runas (Sam) { Assert.Equal("me", ApiKey.Single(k => k.Id == scoped.Id).Tools); }
+}
+
 [Test(Team)]
 void only_a_people_manager_issues_a_key_and_nobody_reads_one_back() {
   var ada = Person("ada@desk.test");
@@ -59,6 +85,22 @@ void only_a_people_manager_issues_a_key_and_nobody_reads_one_back() {
     });
   }
   Assert.Contains("ada@desk.test", Me(issued.Key));
+}
+
+// WHAT A KEY MAY CARRY IS A MANAGER'S TO READ (KEYSCOPE D-KEYSCOPE-45): somebody who does not manage people is refused the names
+// the key page offers, and an issue is refused as not theirs BEFORE anything is minted — so neither the mint's refusal (which
+// names what may be chosen, or under an organization's cap says the cap) nor a key ever reaches them. A manager still reads them.
+[Test(Team)]
+void a_non_manager_is_refused_what_a_key_may_carry_before_any_mint() {
+  var ada = Person("ada@desk.test");
+  runas (Ada) {
+    Assert.Denied(() => KeyToolSets());
+    Assert.Denied(() => IssueApiKey(ada, "My own", "", "nope"));
+  }
+  runas (Sam) {
+    Assert.Equal("me,notices", string.Join(",", KeyToolSets()));
+    Assert.Equal(0, ApiKey.Count());
+  }
 }
 
 [Test(Team)]

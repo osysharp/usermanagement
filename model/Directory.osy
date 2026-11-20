@@ -156,8 +156,11 @@ public class AccessEvent {
   public string Change = "";
   /// Who it concerns — the person whose access it is; for an integration, who answers for it.
   public string Person = "";
-  /// It was asked for and NOT made: a rule refused it, and `Refusal` says which.
+  /// It was asked for and NOT made: a rule refused it, or it waited too long and expired (`Expired`), and `Refusal` says
+  /// which.
   public bool Refused = false;
+  /// It was not made because it waited too long for its run (`AccessChangeState.Expired`) — marked "Expired", not "Refused".
+  public bool Expired = false;
   public string Refusal = "";
 }
 
@@ -220,7 +223,8 @@ public PersonDetail PersonDetailOf(Guid id) {
   foreach (var c in AccessChange.Where(x => x.Person == p).Include(x => x.By).OrderByDescending(x => x.At).Take(50).ToList()) {
     d.History.Add(new AccessEvent { Id = c.Id, At = c.At, What = Describe(c), Change = Describe(c), Person = d.Name,
                                     By = c.By.DisplayName != "" ? c.By.DisplayName : c.By.Email, Reason = c.Reason,
-                                    Refused = c.State == AccessChangeState.Refused, Refusal = c.Refusal ?? "" });
+                                    Refused = c.State == AccessChangeState.Refused || c.State == AccessChangeState.Expired,
+                                    Expired = c.State == AccessChangeState.Expired, Refusal = c.Refusal ?? "" });
   }
   foreach (var i in Invitation.Where(x => x.AcceptedBy == p).Include(x => x.InvitedBy).ToList()) {
     d.History.Add(new AccessEvent { Id = i.Id, At = i.AcceptedAt ?? i.CreatedAt, What = "Joined by an invitation to " + InvitedInto(i)
@@ -261,7 +265,8 @@ public List<AccessEvent> AccessTrail(int take = 100) {
              : Describe(c) + " — " + whom;
     all.Add(new AccessEvent { Id = c.Id, At = c.At, What = what, Change = Describe(c), Person = whom,
                               By = c.By.DisplayName != "" ? c.By.DisplayName : c.By.Email, Reason = c.Reason,
-                              Refused = c.State == AccessChangeState.Refused, Refusal = c.Refusal ?? "" });
+                              Refused = c.State == AccessChangeState.Refused || c.State == AccessChangeState.Expired,
+                                    Expired = c.State == AccessChangeState.Expired, Refusal = c.Refusal ?? "" });
   }
   return all;
 }

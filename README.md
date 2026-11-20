@@ -92,6 +92,16 @@ it and when, and when it was last used, with Revoke at the end of the row. Revok
 deactivating its holder, refuses it from the next request. Issuing and revoking are access changes like any other,
 on the trail with who did it and why. From code: `IssueApiKey(p, "Nightly export").Key`, `RevokeApiKey(key)`.
 
+**A key for some tool sets.** On an app with a tool server (`app.McpServer`), the issue form lists, under *What it
+reaches*, the tool sets and catalogs a key may be issued for here, a checkbox each. Tick some and the key reaches only
+those, over MCP and on the REST API (the list then names them: "Nightly export · tools: planner"); tick none and it
+reaches everything its holder may. The list is `KeyToolSets()` (the platform's `Security.ApiKeyToolSets()`): under the
+organization's cap on what a key may carry (`mcp.toolSets`) only the cap's names are offered, and an app with no tool
+server shows no list. From code: `IssueApiKey(p, "Nightly export", "", "planner,releases")` — a comma list, "" for every
+set. The cap is asked at the mint itself: a key it forbids — none ticked under a cap of names or under `scoped`, a name
+outside it, anything under a rule that cannot be read — is refused before any key exists, and the form shows the
+organization's sentence (the one the platform's own key endpoint answers with), so nothing is issued.
+
 | Shown once, after it is issued | Revoked, in the dark |
 |---|---|
 | ![a new API key shown once with a copy button](docs/api-keys-once.png) | ![the revoked keys list in the dark theme](docs/api-keys-revoked-dark.png) |
@@ -152,6 +162,14 @@ the reason, and nothing changes:
 - a second factor is reset only with a **reason** written down;
 - deactivating, resetting a second factor and signing out everywhere end every session the person has, on every server,
   and each ended session is told an administrator changed the account's access — not that its password changed.
+
+A change is made when it is asked for, or not at all. One its run could not apply within **24 hours** of being asked for
+(`AccessChangeWaitsAtMost()`) — a run that failed and is retried, or one that ended without applying it — is **expired**
+(`AccessChangeState.Expired`) instead, with the reason, and nothing changes: when its run comes to it at last, the age is
+the first thing it checks, and an hourly sweep (`AccessChangeExpiry`) starts the run again of every change still waiting
+after its day, so none is left waiting. The age is measured from `At`, which the platform writes when the change is
+recorded (`[CreatedAt]`) — nobody sets it, so nobody keeps a change fresh. The manager who asked is mailed that it expired
+and to ask again; the trail marks it **Expired**.
 
 Resetting a second factor clears the authenticator, the recovery codes and a texted step, mails the person, and signs them
 out: they sign in with their password and set it up again — or, where the app requires it, the sign-in asks them to.

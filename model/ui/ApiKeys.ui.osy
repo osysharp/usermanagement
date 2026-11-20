@@ -10,7 +10,8 @@ using Osysharp.Identity;
 using Osysharp.Ui;
 
 /// The keys, issuing one and revoking one, and the integrations that hold them. In a test: `Ui.Click("Issue a key")`,
-/// `Ui.Select("For", ada)`, `Ui.Fill("What it is for", "Nightly export")`, `Ui.Click("Issue it")` — or
+/// `Ui.Select("For", ada)`, `Ui.Fill("What it is for", "Nightly export")`, (on an app with a tool server) `Ui.Click("planner")`
+/// to tick a tool set it reaches, `Ui.Click("Issue it")` — or
 /// `Ui.Click("Add an integration")`, `Ui.Fill("Name", "Zapier")`, `Ui.Click("Agent")`, `Ui.Click("Add it and issue a key")`
 /// — or, for one whose owner has left, `Ui.Click("Reassign", within: "Integrations")`, `Ui.Select("New owner", sam)`,
 /// `Ui.Click("Reassign it")`.
@@ -25,6 +26,9 @@ public component ApiKeyManager() {
   bool issuing = false;
   Principal? forWhom = null;
   string name = "";
+  // The tool sets a key may be issued for here (`KeyToolSets()`), and those ticked: none ticked = a key for everything its holder may.
+  List<string> toolSets = [];
+  List<string> chosenSets = [];
   string problem = "";
   // a key, shown once
   string key = "";
@@ -127,15 +131,21 @@ public component ApiKeyManager() {
   }
   action StartIssue() {
     holders = KeyHolders();
+    toolSets = KeyToolSets();
+    chosenSets = [];
     forWhom = null;
     name = ""; problem = ""; issuing = true;
+  }
+  action ToggleSet(string set) {
+    if (chosenSets.Contains(set)) { chosenSets = chosenSets.Where(s => s != set).ToList(); }
+    else { chosenSets = toolSets.Where(s => s == set || chosenSets.Contains(s)).ToList(); }
   }
   action StopIssue() { issuing = false; }
   action Issue() {
     problem = "";
     try {
       if (forWhom == null) { problem = "Choose who the key is for."; return; }
-      var made = IssueApiKey(forWhom!, name);
+      var made = IssueApiKey(forWhom!, name, "", string.Join(",", chosenSets));
       key = made.Key;
       keyFor = HolderName(forWhom!) + " — " + name.Trim();
       notice = "";
@@ -205,7 +215,7 @@ public component ApiKeyManager() {
             }
           }
           foreach (var line in lines) {
-            RecordRow(keyColumns, [line.Name, line.Ending, line.Holder, line.IssuedBy, line.IssuedOn, line.Used], keyCols,
+            RecordRow(keyColumns, [line.Named, line.Ending, line.Holder, line.IssuedBy, line.IssuedOn, line.Used], keyCols,
                       note: ActsWithNoRole(line) ? line.Holder + " holds no role — this key is accepted and can do nothing that needs one." : "") {
               Button("Revoke", onPress: () => AskRevoke(line), size: Size.Sm, announceAs: "Revoke " + line.Name);
             }
@@ -241,7 +251,7 @@ public component ApiKeyManager() {
           if (showRevoked) {
             RecordTable("Revoked keys", revokedColumns, revokedCols) {
               foreach (var line in revoked) {
-                RecordRow(revokedColumns, [line.Name, line.Ending, line.Holder, line.IssuedBy, line.IssuedOn, line.RevokedWords], revokedCols,
+                RecordRow(revokedColumns, [line.Named, line.Ending, line.Holder, line.IssuedBy, line.IssuedOn, line.RevokedWords], revokedCols,
                           actions: false, faded: true);
               }
             }
@@ -258,6 +268,17 @@ public component ApiKeyManager() {
           Dropdown("For", value: forWhom, options: holders, placeholder: "Choose a person…") { p => Text(HolderName(p)); }
         }
         Field("What it is for", value: name, placeholder: "Nightly export", hint: "How you will recognise it in the list.");
+        // Only on an app with a tool server, and only the names a key may really carry here (the organization's cap).
+        if (toolSets.Count > 0) {
+          Stack(gap: 1, label: "What it reaches") {
+            Text("What it reaches", fontSize: FontSize.Label, fontWeight: FontWeight.Medium);
+            foreach (var set in toolSets) { ToolSetTick(set, () => ToggleSet(set)); }
+            Text(chosenSets.Count == 0
+                   ? "None ticked: it reaches everything its holder may. Tick some and it reaches only those, on the app's tools and its API."
+                   : "It reaches only " + string.Join(", ", chosenSets) + ", on the app's tools and its API.",
+                 fontSize: FontSize.Caption, color: Colors.TextSecondary);
+          }
+        }
         if (problem != "") { Alert(problem, tone: Tone.Danger); }
         Row(gap: 2, justify: Justify.End) {
           Button("Cancel", onPress: StopIssue, tone: Tone.Ghost);
@@ -326,4 +347,10 @@ public component ApiKeyManager() {
       }
     }
   }
+}
+
+/// One tool set to tick on the issue form: the Ui kit's checkbox, holding its own tick, and telling the form each press.
+component ToolSetTick(string set, Action onToggle) {
+  bool ticked = false;
+  render { Checkbox(set, value: ticked, onToggle: onToggle); }
 }

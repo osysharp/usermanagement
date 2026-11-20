@@ -164,6 +164,39 @@ void a_manager_issues_a_key_sees_it_once_and_revokes_it() {
   Ui.Shot("api-keys-revoked-dark");
 }
 
+/// A manager issues Ada a key for one of the app's tool sets, ticked on the form: the form offers the sets a key may carry here
+/// (the app's tool server's catalogs, `me` and `notices`), says what a tick means, and the key it issues carries the one ticked —
+/// in its record (`Tools`), the list's name and the key's own `~me` (KEYSCOPE D-KEYSCOPE-38).
+[Test(Office)]
+void a_manager_ticks_the_tool_sets_a_key_reaches_and_the_key_carries_them() {
+  Ui.Viewport(1440, 900);
+  Ui.SignInAs(Sam);
+  Ui.Visit("/people/keys");
+  Ui.Click("Issue a key");
+  Assert.Dialog("Issue an API key");
+  User? ada = null;
+  runas (Sam) { ada = User.Single(u => u.Email == "ada.moreno@desk.test"); }
+  Ui.Select("For", ada!);
+  Ui.Fill("What it is for", "Who-am-I bot");
+  Assert.Visible("me", within: "What it reaches");
+  Assert.Visible("notices", within: "What it reaches");
+  Assert.Visible("None ticked: it reaches everything its holder may.", within: "What it reaches");
+  Ui.Click("me", within: "What it reaches");
+  Assert.Checked("me", true);
+  Assert.Checked("notices", false);
+  Assert.Visible("It reaches only me, on the app's tools and its API.", within: "What it reaches");
+  Ui.Shot("api-keys-issue-tool-sets");
+  Ui.Click("Issue it");
+  Assert.Visible("The key for Ada Moreno — Who-am-I bot");
+  Ui.Click("I have copied it");
+  Assert.Visible("Who-am-I bot · tools: me", within: "Keys in use");
+  runas (Sam) {
+    var k = ApiKey.Single(x => x.Name == "Who-am-I bot");
+    Assert.Equal("me", k.Tools);
+    Assert.Equal(1, k.Slot);
+  }
+}
+
 /// A manager adds an integration in one step — its name, what it may do — and is shown its first key once; the
 /// integration is listed with its role, its owner and its key, the key acts as it, and switching it off revokes the key.
 [Test(Office)]

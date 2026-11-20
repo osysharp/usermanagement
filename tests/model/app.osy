@@ -94,6 +94,14 @@ app.Apis = [
 /// GET /me — the caller's address.
 public string WhoAmI() { return Session.CurrentUser == null ? "" : Session.CurrentUser!.Email; }
 
+// A small tool server, so a key issued for some of its tool sets can be shown to reach only them (tests/api-keys.test.osy).
+app.McpServer = new McpServer {
+  Catalogs = [
+    new ToolCatalog("me") { Tools = [ new Tool(WhoAmI) ] },
+    new ToolCatalog("notices") { Tools = [ new CrudTool<DeskNotice>() { Operations = [CrudOp.Read] } ] },
+  ],
+};
+
 /// A team of the app's own people.
 ///
 /// The app's own read rules on its own kind of organisation bind every reader — the access change's run too, which

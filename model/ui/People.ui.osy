@@ -332,7 +332,7 @@ public component PersonPanel(PersonDetail d, Action onChanged, Action onClose) {
             Row(gap: 2, align: Align.Center) {
               Row(gap: 2, align: Align.Center, wrap: Wrapping.Wrap, grow: 1, minW: "0") {
                 Text(e.What, fontSize: FontSize.Label, fontWeight: FontWeight.Medium, wordBreak: WordBreak.BreakWord);
-                if (e.Refused) { Badge("Refused", tone: Tone.Danger); }
+                if (e.Refused) { Badge(e.Expired ? "Expired" : "Refused", tone: Tone.Danger); }
               }
               Text(e.At.ToString("d MMM HH:mm"), fontFamily: Font.Mono, fontSize: FontSize.Caption, color: Colors.TextMuted, shrink: 0);
             }
@@ -400,7 +400,8 @@ component RoleOfferRow(RoleOffer offer, Action onAdd, Action onRemove) {
 
 /// The app-wide trail of who changed whose access, newest first — an auditor's page.
 /// A table: when, what, who it concerns, by whom and why — `take` at a time, with "Show more" under it, and never more
-/// than `AccessTrailMost()`. A change a rule refused is marked "Refused", with the rule's reason under it.
+/// than `AccessTrailMost()`. A change a rule refused is marked "Refused", with the rule's reason under it; one that waited too
+/// long, "Expired", with why.
 /// In a test it is the region "Access trail": `Assert.Visible("Granted Lead", within: "Access trail")`.
 [Composable]
 public component AccessTrailList(int take = 50) {
@@ -437,7 +438,7 @@ public component AccessTrailList(int take = 50) {
         }
         foreach (var e in trail) {
           RecordRow(columns, [e.At.ToString("d MMM yyyy HH:mm"), e.Change, e.Person, e.By, e.Reason], cols, strong: 1, actions: false,
-                    mark: e.Refused ? "Refused" : "", markTone: Tone.Danger, note: e.Refused ? e.Refusal : "", noteTone: Tone.Danger);
+                    mark: e.Refused ? (e.Expired ? "Expired" : "Refused") : "", markTone: Tone.Danger, note: e.Refused ? e.Refusal : "", noteTone: Tone.Danger);
         }
       }
       if (more) { Row { Button("Show more", onPress: ShowMore, size: Size.Sm, announceAs: "Show more access changes"); } }

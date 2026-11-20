@@ -237,3 +237,93 @@ void a_role_held_only_inside_an_organisation_is_never_given_across_the_app() {
     Assert.False(RoleGrant.Any(g => g.Member == mo && g.Role == AppRole.TeamLead));
   }
 }
+
+// A CHANGE THAT WAITED TOO LONG EXPIRES, AND IS NEVER MADE LATE: a grant asked for two days ago that its run never applied (a run
+// that could not run — an app whose rules let it read nobody) is not made when a run comes to it at last, whether the hourly sweep's
+// or its own: it is Expired, with the reason, the role is not given, and the manager who asked is told to ask again.
+[Test(Team)]
+void a_stale_access_change_expires_and_is_not_applied() {
+  var mo = Person("mo@desk.test");
+  Guid swept = Guid.Empty;
+  Guid settled = Guid.Empty;
+  runas (Sam) {
+    Workflow.WithoutAutostart(() => {
+      new AccessChange { Person = mo, By = Sam, Kind = AccessChangeKind.RoleGranted, Role = AppRole.Lead, Reason = "Covering the queue" };
+      new AccessChange { Person = mo, By = Sam, Kind = AccessChangeKind.RoleGranted, Role = AppRole.Agent, Reason = "First week" };
+    });
+  }
+  runas (Sam) {
+    swept = AccessChange.Single(c => c.Person == mo && c.Role == AppRole.Lead).Id;
+    settled = AccessChange.Single(c => c.Person == mo && c.Role == AppRole.Agent).Id;
+  }
+  // The hourly sweep's row, as the app's start hook makes it.
+  runas (AccessChanger) { if (!AccessChangeSweep.Any()) { new AccessChangeSweep(); } }
+  TestClock.Advance(TimeSpan.FromDays(2));
+  // The sweep comes to the first…
+  runas (AccessChanger) { Workflow.Settle(AccessChangeSweep.Single()); }
+  runas (Sam) { Assert.Equal(AccessChangeState.Expired, AccessChange.Single(c => c.Id == swept).State); }
+  // …and its own run to the second.
+  runas (Sam) { Workflow.Settle(AccessChange.Single(c => c.Id == settled)); }
+  runas (Sam) {
+    foreach (var id in new List<Guid> { swept, settled }) {
+      var c = AccessChange.Single(x => x.Id == id);
+      Assert.Equal(AccessChangeState.Expired, c.State);
+      Assert.Contains("waited more than 24 hours", c.Refusal ?? "");
+      Assert.Contains("Ask again", c.Refusal ?? "");
+    }
+  }
+  runas (Mo) { Assert.False(RoleGrant.Any(g => g.Member == Mo && (g.Role == AppRole.Lead || g.Role == AppRole.Agent))); }
+  runas (AuthBootstrap) {
+    Assert.Equal(2, OutgoingMail.Count(m => m.To == "sam@desk.test" && m.Subject.Contains("expired")));
+  }
+}
+
+// A CHANGE DATED IN THE FUTURE EXPIRES TOO: before `At` was the platform's stamp a manager could write it, so a change left waiting
+// from then may say it was asked for days ahead — which would keep it young for ever. Its `At` three days past the clock, it is expired,
+// not made, whether the hourly sweep or its own run comes to it.
+[Test(Team)]
+void an_access_change_dated_ahead_of_the_clock_expires_and_is_not_applied() {
+  var mo = Person("mo@desk.test");
+  Guid swept = Guid.Empty;
+  Guid settled = Guid.Empty;
+  var now = DateTime.UtcNow;
+  // Asked for with the clock three days ahead: each change says it was asked for then.
+  TestClock.Set(now.AddDays(3));
+  runas (Sam) {
+    Workflow.WithoutAutostart(() => {
+      new AccessChange { Person = mo, By = Sam, Kind = AccessChangeKind.RoleGranted, Role = AppRole.Lead, Reason = "Covering the queue" };
+      new AccessChange { Person = mo, By = Sam, Kind = AccessChangeKind.RoleGranted, Role = AppRole.Agent, Reason = "First week" };
+    });
+  }
+  runas (Sam) {
+    swept = AccessChange.Single(c => c.Person == mo && c.Role == AppRole.Lead).Id;
+    settled = AccessChange.Single(c => c.Person == mo && c.Role == AppRole.Agent).Id;
+  }
+  TestClock.Set(now);
+  // Its own run comes to the first…
+  runas (Sam) { Workflow.Settle(AccessChange.Single(c => c.Id == settled)); }
+  runas (Sam) { Assert.Equal(AccessChangeState.Expired, AccessChange.Single(c => c.Id == settled).State); }
+  // …and the hourly sweep to the second.
+  runas (AccessChanger) { if (!AccessChangeSweep.Any()) { new AccessChangeSweep(); } }
+  TestClock.Advance(TimeSpan.FromHours(2));
+  runas (AccessChanger) { Workflow.Settle(AccessChangeSweep.Single()); }
+  runas (Sam) { Assert.Equal(AccessChangeState.Expired, AccessChange.Single(c => c.Id == swept).State); }
+  runas (Mo) { Assert.False(RoleGrant.Any(g => g.Member == Mo && (g.Role == AppRole.Lead || g.Role == AppRole.Agent))); }
+}
+
+// THE HOURLY SWEEP IS STOPPED BY A PEOPLE MANAGER ALONE: anybody else who could stop it would leave a change that waited too long
+// waiting, unmarked, and its asker untold.
+[Test(Team)]
+void only_a_people_manager_stops_the_hourly_sweep() {
+  AccessChangeSweep? sweep = null;
+  runas (AccessChanger) {
+    if (!AccessChangeSweep.Any()) { new AccessChangeSweep(); }
+    sweep = AccessChangeSweep.Single();
+  }
+  runas (Mo) { Assert.Denied(() => AccessChangeExpiry.RaiseStop(sweep!)); }
+  runas (Ada) { Assert.Denied(() => AccessChangeExpiry.RaiseStop(sweep!)); }
+  runas (Sam) { Assert.Equal(AccessChangeSweepState.Watching, AccessChangeSweep.Single().State); }
+  runas (Sam) { AccessChangeExpiry.RaiseStop(AccessChangeSweep.Single()); }
+  runas (AccessChanger) { Workflow.Settle(AccessChangeSweep.Single()); }
+  runas (Sam) { Assert.Equal(AccessChangeSweepState.Stopped, AccessChangeSweep.Single().State); }
+}

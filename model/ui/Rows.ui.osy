@@ -47,7 +47,7 @@ component ApiKeyRow(ApiKeyLine line, Action? onRevoke) {
       }
       Stack(gap: 1, grow: 1, minW: "0") {
         Row(gap: 2, align: Align.Center, wrap: Wrapping.Wrap) {
-          Text(line.Name, fontWeight: FontWeight.Medium);
+          Text(line.Named, fontWeight: FontWeight.Medium);
           Text(line.Ending, fontFamily: Font.Mono, fontSize: FontSize.Caption, color: Colors.TextMuted);
           if (line.Revoked) { Badge("Revoked", tone: Tone.Default); }
         }

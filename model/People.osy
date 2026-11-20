@@ -25,7 +25,7 @@ public class PeopleSetup {
   public role? KeepOneOf = null;
   /// Whether every change needs a reason written down. Resetting a second factor always does. An organisation's policy
   /// may require it for every app it runs.
-  [OrgPolicy(OrgPolicyMode.Lock)] public bool ReasonRequired = false;
+  [OrgPolicy(OrgPolicyMode.Lock, Name = "Reason required to change a person's account")] public bool ReasonRequired = false;
   /// Who the people list shows — everybody by default; derive and override to show only the team (a helpdesk's
   /// customers sign in too, and are not who its admins look after here).
   public PeopleDirectory Directory = new PeopleDirectory();
@@ -73,8 +73,10 @@ public enum AccessChangeKind {
 
 /// Where a change stands — applied in the same commit that records it, or refused (with the reason) when it breaks a rule
 /// every change obeys. The functions below check first and refuse before anything is recorded; the run checks again,
-/// because a change can be recorded without them.
-public enum AccessChangeState { Requested, Applied, Refused }
+/// because a change can be recorded without them. A change its run did not apply within `AccessChangeWaitsAtMost()` of
+/// being asked for is expired, with the reason, and never made: a grant applied a day late is one nobody decided now.
+/// ⚠ Appended, never inserted: a state is stored by its position.
+public enum AccessChangeState { Requested, Applied, Refused, Expired }
 
 /// One change to somebody's access — who made it, to whom, what, when and why. Made by a people manager and applied by
 /// its run in the same commit; never edited, never deleted. It IS the audit trail of who changed whose access.
@@ -82,7 +84,10 @@ public enum AccessChangeState { Requested, Applied, Refused }
 /// SECURITY-INVARIANT(people-access-changes-are-recorded-and-the-managers-alone): a change to a person's access through
 /// the user manager — a role granted or revoked, an account deactivated or reactivated, a second factor reset, a
 /// sign-out everywhere, an organisation membership or role — is made ONLY by recording an `AccessChange`, which only the
-/// app's people managers (`ManagesPeople`) may create, naming themselves as `By`; it is never edited or deleted; it never
+/// app's people managers (`ManagesPeople`) may create, naming themselves as `By`; it is never edited or deleted; it is
+/// never applied once it has waited longer than `AccessChangeWaitsAtMost()` (measured from `At`, which the platform
+/// writes), nor once it says it was asked for further ahead of the clock than `AccessChangeClockSkewAtMost()` (a row from
+/// before the stamp) — its run, or the sweep, expires it instead (`Expired`); it never
 /// carries the sign-in flow's `Authenticator` role, nor a role the app does not offer (`app.Roles`); an API key is put on
 /// an account or taken off one only this way (`ApiKey`), and an integration is given a new owner only this way
 /// (`IntegrationReassigned` — `Integration` denies every direct update); and a manager never
@@ -105,9 +110,11 @@ public entity AccessChange {
   [MaxLength(100)] string? IntegrationName;
   Integration? Integration;
   [MaxLength(500)] string Reason = "";
-  DateTime At = DateTime.UtcNow;
+  /// When it was asked for — the commit that recorded it, written by the platform: nobody sets it, so nobody keeps a
+  /// change fresh. Its age is what expires a change that waited too long (`AccessChangeWaitsAtMost`).
+  [CreatedAt] DateTime At;
   AccessChangeState State;
-  /// Why it was not applied — set only on a refused change.
+  /// Why it was not applied — set only on a refused or expired change.
   [MaxLength(500)] string? Refusal;
 
   security {
@@ -149,6 +156,9 @@ workflow AccessChangeFlow {
   Initial   = Requested;
   RunsAs    = AccessChanger;
   ActsFor   = Nobody;
+  // Started by hand only by the hourly sweep (`ExpireStaleAccessChanges`, as AccessChanger), for a change whose run ended or
+  // that has none (one from before this workflow's deploy). Nobody may write a change, so "may change the row" admits no one.
+  StartedBy = u => u == Actor.Of<AccessChanger>();
 
   // ⚑ ITS OWN ACTOR, ACTING FOR NOBODY. The manager is asked when they make the change (`ManagesPeople`,
   //   the floor above); what they decided keeps its judgement for them (`ApplyAccessChange`, `[JudgedFor(change.MadeBy)]`:
@@ -159,6 +169,13 @@ workflow AccessChangeFlow {
   state Requested {
     enter {
       var c = this.Item;
+      // FIRST, before anything is checked or read: a change that waited too long is not made now — a run that could not
+      // run when it was asked for (and is retried, or started again by the sweep) never makes a decision late.
+      if (WaitedTooLong(c, DateTime.UtcNow)) {
+        c.Refusal = ExpiredRefusal();
+        TellExpired(c);
+        goto Expired;
+      }
       var problem = AccessProblem(c.Person, c.By, c.Kind, c.Role, c.Organization, c.Reason);
       // A key change is checked against the account itself — its key slots, whether it may sign in — which only the
       // run (its actor) can read.
@@ -187,6 +204,118 @@ workflow AccessChangeFlow {
   }
   terminal success Applied { }
   terminal error Refused { Message = "access change refused"; }
+  terminal cancel Expired { Message = "access change expired"; }
+}
+
+/// How long a change may wait for its run to apply it. After that it is expired, not made.
+public TimeSpan AccessChangeWaitsAtMost() { return TimeSpan.FromHours(24); }
+
+/// How far ahead of the clock a change's `At` may be and still be taken as made now: the clocks of the nodes that stamp it and read it.
+/// A change dated further ahead was dated by a caller (before `At` was the platform's stamp, a manager could write it), and is expired.
+public TimeSpan AccessChangeClockSkewAtMost() { return TimeSpan.FromMinutes(5); }
+
+/// Whether `change` was asked for longer ago than a change may wait, at `now` — or says it was asked for ahead of `now` (a date no
+/// change made now carries, which would keep it young for ever).
+bool WaitedTooLong(AccessChange change, DateTime now) {
+  return now - change.At > AccessChangeWaitsAtMost() || change.At - now > AccessChangeClockSkewAtMost();
+}
+
+/// What an expired change records, and what the manager who asked is told.
+string ExpiredRefusal() {
+  return "This change waited more than 24 hours without being applied, so it expired and was not made. Ask again.";
+}
+
+/// Tell the manager who asked that `change` expired and was not made — once, whoever comes to it. The mail says the change,
+/// when it was asked for and why, and not whose access it was: an app may let its run read a change's person only while
+/// the change may still be made, and the manager finds it on the trail.
+void TellExpired(AccessChange change) {
+  if (change.By is User asker) {
+    SendRendered(asker.Email, AccessChangeExpiredMail(Describe(change), change.At, change.Reason), $"access-change-expired-{change.Id}");
+  }
+}
+
+[Email]
+public component AccessChangeExpiredMail(string change, DateTime asked, string reason) {
+  subject => "An access change you asked for expired and was not made";
+  render {
+    EmailLayout(AccountsAppName(), preview: $"{change} was not made — ask again.") {
+      EmailHeading("An access change expired");
+      EmailText($"On {asked.ToString("d MMM yyyy HH:mm")} UTC you asked for this change to somebody's access: {change}{(reason != "" ? " (“" + reason + "”)" : "")}. It waited more than 24 hours without being applied, so it expired and was not made.");
+      EmailNote("Ask again if it is still wanted — it is on the access trail, marked Expired.");
+    }
+  }
+}
+
+/// Every change still waiting after `AccessChangeWaitsAtMost()` is expired: its run is started again, and its first step
+/// expires it (`Requested`'s `enter`). A change whose run ended without applying it — or that has none — is reached here,
+/// so no waiting change outlives its day, whether or not anything retries it. A change whose run is still live keeps that
+/// run, which expires it itself when it next runs. Answers how many it came to.
+[SuppressWarning("cost-unbounded-read")]   // the changes still waiting after a day — none, but for runs that could not run
+int ExpireStaleAccessChanges() {
+  var before = DateTime.UtcNow - AccessChangeWaitsAtMost();
+  var ahead = DateTime.UtcNow + AccessChangeClockSkewAtMost();
+  var stale = AccessChange.Where(c => c.State == AccessChangeState.Requested && (c.At < before || c.At > ahead)).ToList();
+  foreach (var c in stale) { AccessChangeFlow.StartAgain(c); }
+  return stale.Count;
+}
+
+/// Whether the hourly sweep for changes that waited too long runs. ⚠ Appended, never inserted.
+public enum AccessChangeSweepState {
+  [Label("Checking hourly")] Watching,
+  [Label("Stopped")] Stopped,
+}
+
+/// The one row the hourly sweep runs on (`AccessChangeExpiry`) — made when the app loads (`StartTheAccessChangeSweep`).
+public entity AccessChangeSweep {
+  AccessChangeSweepState State;
+  security {
+    allow read when ManagesPeople || user == Actor.Of<AccessChanger>();
+    allow create when user == Actor.Of<AccessChanger>();
+    deny update;
+    deny delete;
+  }
+}
+
+/// The sweep starts when the app loads — once, whatever the number of nodes or loads: a start hook runs on every one of
+/// them, so it looks before it makes the row. The first sweep after a release reaches every change left waiting before it.
+[OnStart(RunsAs = AccessChanger)]
+internal void StartTheAccessChangeSweep() {
+  if (!AccessChangeSweep.Any()) { new AccessChangeSweep(); }
+}
+
+/// The hourly sweep is due — heard after the tick's commit by `ExpireOnTheHour`, which expires what waited too long. An
+/// event and not the tick's own body: a change's run is started again only from a function (`StartAgain`), never from
+/// a workflow's body.
+[Event("Access changes swept")]
+sealed class AccessChangeSweepDue { public DateTime At; }
+
+/// The sweep itself, as the access-change run's actor — what reads the waiting changes and starts their runs again.
+[On(RunsAs = AccessChanger)]
+void ExpireOnTheHour(AccessChangeSweepDue e) { ExpireStaleAccessChanges(); }
+
+/// Every hour: every change that waited too long is expired (`AccessChangeSweepDue` → `ExpireStaleAccessChanges`).
+public workflow AccessChangeExpiry {
+  Tracks    = AccessChangeSweep.State;
+  Autostart = true;
+  Initial   = Watching;
+  RunsAs    = AccessChanger;
+  ActsFor   = Nobody;
+
+  /// Stopping the sweep is a people manager's alone: a change that waited too long would otherwise be left waiting, unmarked.
+  [Authorize(u => ManagesPeople)]
+  event Stop();
+
+  state Watching {
+    subscribe Stop() as Stopping {
+      Finished {
+        Within = TimeSpan.FromDays(36500);
+        Remind Tick(After = TimeSpan.FromHours(1), ThenEvery = TimeSpan.FromHours(1)) { Raise(new AccessChangeSweepDue { At = DurableClock.UtcNow }); }
+        Unfinished { }
+      }
+    }
+    on Stopping() { goto Stopped; }
+  }
+  terminal cancel Stopped { }
 }
 
 /// "" when the change obeys every rule a change obeys, else the sentence saying which it breaks: a role must be named
@@ -318,9 +447,9 @@ AccessChange RecordAccessChange(Principal person, AccessChangeKind kind, role? r
   var problem = AccessProblem(person, me, kind, r, org, reason);
   if (problem != "") { throw new ValidationException(problem); }
   var made = new AccessChange { Person = person, By = me, Kind = kind, Role = r, Organization = org,
-                                Reason = reason.Trim(), At = DateTime.UtcNow };
+                                Reason = reason.Trim() };
   UnitOfWork.Commit();
-  ThrowIfRefused(made.Id, "The change was not made.");
+  ThrowUnlessApplied(made.Id, "The change was not made.");
   return made;
 }
 

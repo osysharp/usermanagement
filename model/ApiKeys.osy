@@ -27,8 +27,11 @@ public entity ApiKey {
   [Required, MaxLength(100)] string Name;
   [Required] Principal IssuedBy;
   DateTime IssuedAt = DateTime.UtcNow;
-  /// The key's last four characters — enough to match it by eye, too few to use.
+  /// The last four characters of the key's random part (never of a scope's `~names`) — enough to match it by eye, too few to use.
   [MaxLength(10)] string Ending = "";
+  /// The tool sets the key was minted for (`planner,releases`) — it reaches only those, on the app's tool server and its
+  /// REST API; "" for a key that reaches everything its holder may.
+  [MaxLength(100)] string Tools = "";
   /// Which of the holder's two key slots holds it — 1 or 2; 0 until its access change is applied.
   int Slot = 0;
   /// The key's hash, from the moment it is issued until its run puts it on the account; then null. Nobody reads it.
@@ -59,8 +62,12 @@ public class IssuedApiKey {
 }
 
 /// Issue `person` a new API key named `name` (what it is for). Answers the key — shown ONCE — and its record. Refused when
-/// the person is deactivated, or already holds two keys (revoke one first). Committed.
-public IssuedApiKey IssueApiKey(Principal person, string name, string reason = "") {
+/// the person is deactivated, or already holds two keys (revoke one first). `tools` (`"planner,releases"`) mints a key that
+/// reaches only those tool sets of the app's tool server; "" a key that reaches everything its holder may. Committed.
+/// Only a people manager calls it — anybody else is refused before anything is minted, so the mint's refusal (the names a key
+/// may carry, or the organization's cap) is never said to them.
+[Authorize(ManagesPeople)]
+public IssuedApiKey IssueApiKey(Principal person, string name, string reason = "", string tools = "") {
   var me = Session.CurrentUser;
   if (me == null) { throw new NotAuthorized("Sign in to issue an API key."); }
   var shown = name.Trim();
@@ -70,34 +77,44 @@ public IssuedApiKey IssueApiKey(Principal person, string name, string reason = "
   if (ApiKey.Count(k => k.Holder == person && k.Slot > 0 && k.RevokedAt == null) >= 2) {
     throw new ValidationException("This account already holds two keys — revoke one before issuing another.");
   }
-  var key = Security.NewApiKey();
+  var scope = tools.Trim();
+  var key = scope == "" ? Security.NewApiKey() : Security.NewApiKey(Text.Split(scope, ","));
+  var sets = key.Contains("~") ? key.Substring(key.IndexOf("~") + 1) : "";
+  var secret = key.Contains("~") ? key.Substring(0, key.IndexOf("~")) : key;
   var made = new ApiKey { Holder = person, Name = shown, IssuedBy = me!, IssuedAt = DateTime.UtcNow,
-                          Ending = "…" + key.Substring(key.Length - 4), PendingHash = Security.HashApiKey(key) };
+                          Ending = "…" + secret.Substring(secret.Length - 4), Tools = sets, PendingHash = Security.HashApiKey(key) };
   var change = RecordKeyChange(person, AccessChangeKind.ApiKeyIssued, made, reason);
   // The run puts the hash on the account in the same commit — or refuses (a key this page never issued fills both slots),
-  // in which case the key it would have been is worthless and is not handed out.
-  ThrowIfRefused(change.Id, "The key was not issued.");
+  // or could not run: in either case the key it would have been is worthless and is not handed out.
+  ThrowUnlessApplied(change.Id, "The key was not issued.");
   return new IssuedApiKey { Id = made.Id, Key = key };
 }
 
 /// Revoke `key` — the next request that presents it is refused. Committed.
 public AccessChange RevokeApiKey(ApiKey key, string reason = "") {
   var change = RecordKeyChange(key.Holder, AccessChangeKind.ApiKeyRevoked, key, reason);
-  ThrowIfRefused(change.Id, "The key was not revoked.");
+  ThrowUnlessApplied(change.Id, "The key was not revoked.");
   return change;
 }
 
-/// The change as its run left it — refused, and why, is said to the person who asked.
-void ThrowIfRefused(Guid changeId, string otherwise) {
+/// The change as its run left it — refused or expired, and why, is said to the person who asked; a change its run did not apply (the run
+/// could not run: it is retried, and nothing it would change has changed) is said as not made, so nobody is told a key was
+/// issued or revoked, or anything else was done, that was not.
+void ThrowUnlessApplied(Guid changeId, string otherwise) {
   var applied = AccessChange.Single(c => c.Id == changeId);
-  if (applied.State == AccessChangeState.Refused) { throw new ValidationException(applied.Refusal ?? otherwise); }
+  if (applied.State == AccessChangeState.Refused || applied.State == AccessChangeState.Expired) { throw new ValidationException(applied.Refusal ?? otherwise); }
+  if (applied.State != AccessChangeState.Applied) { throw new ValidationException(otherwise + " Its change could not be applied — try again, or ask whoever runs the app."); }
 }
+
+/// The name 0.13 gave `ThrowUnlessApplied`, kept so code written against it compiles: it says what that one says — a change
+/// not applied, for whatever reason, is never passed over as made.
+void ThrowIfRefused(Guid changeId, string otherwise) { ThrowUnlessApplied(changeId, otherwise); }
 
 AccessChange RecordKeyChange(Principal person, AccessChangeKind kind, ApiKey key, string reason) {
   var me = Session.CurrentUser!;
   var problem = AccessProblem(person, me, kind, null, null, reason);
   if (problem != "") { throw new ValidationException(problem); }
-  var made = new AccessChange { Person = person, By = me, Kind = kind, Key = key, Reason = reason.Trim(), At = DateTime.UtcNow };
+  var made = new AccessChange { Person = person, By = me, Kind = kind, Key = key, Reason = reason.Trim() };
   UnitOfWork.Commit();
   return made;
 }
@@ -157,6 +174,10 @@ public class ApiKeyLine {
   /// The account it acts as — what a page matches against the integrations it lists.
   public Guid HolderId;
   public string Ending = "";
+  /// The tool sets the key reaches (`planner,releases`); "" when it reaches everything its holder may.
+  public string Tools = "";
+  /// The name as the table shows it — with the tool sets of a key minted for some: "Nightly export · tools: planner".
+  public string Named = "";
   public string Issued = "";
   public string LastUsed = "";
   public bool Revoked;
@@ -177,6 +198,7 @@ public List<ApiKeyLine> ApiKeyLines(DateTime now, bool withRevoked = false) {
     var used = k.Slot == 1 ? k.Holder.ApiKeyUsedAt : k.Holder.ApiKey2UsedAt;
     lines.Add(new ApiKeyLine {
       Id = k.Id, Name = k.Name, Holder = NameOf(k.Holder), HolderId = k.Holder.Id, Ending = k.Ending,
+      Tools = k.Tools, Named = k.Tools == "" ? k.Name : k.Name + " · tools: " + k.Tools,
       Issued = $"Issued by {NameOf(k.IssuedBy)} · {k.IssuedAt:d MMM yyyy}",
       LastUsed = k.RevokedAt != null ? "" : used == null ? "Never used" : "Last used " + Ago(used.Value, now),
       IssuedBy = NameOf(k.IssuedBy), IssuedOn = $"{k.IssuedAt:d MMM yyyy}",
@@ -203,6 +225,13 @@ public List<Principal> KeyHolders() {
   }
   return people.OrderBy(p => p.DisplayName).ToList();
 }
+
+/// The tool sets and catalogs a key may be issued for here, by name — the app's tool server's, and under the organization's
+/// cap on what a key may carry (`mcp.toolSets`) only the cap's; none when the app has no tool server, or the rule cannot be
+/// read. What the key page offers to tick; `IssueApiKey(…, tools)` is still refused a key the cap forbids. A people manager's
+/// to read, as the page is: anybody else is refused, and learns neither the names nor the cap.
+[Authorize(ManagesPeople)]
+public List<string> KeyToolSets() { return Security.ApiKeyToolSets(); }
 
 string NameOf(Principal p) { return p.DisplayName != "" ? p.DisplayName : p.Email; }
 

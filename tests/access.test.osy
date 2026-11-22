@@ -190,6 +190,22 @@ void signing_somebody_out_everywhere_ends_every_session_they_have() {
 }
 
 [Test(Team)]
+void signing_out_everywhere_spends_presence() {
+  var key = "";
+  runas (AuthBootstrap) {
+    key = NewSecondFactorSetup("mo@desk.test").Key;
+    EnableSecondFactor("mo@desk.test", "correct-horse-4", key, Totp.Code(key));
+  }
+  var act = "deploy:move-1:version-1:approve";
+  var proof = "";
+  runas (Mo) {
+    proof = Osysharp.UserAccounts.ProvePresence(act, "", "", "correct-horse-4", Totp.Code(key, DateTime.UtcNow.AddSeconds(30)));
+  }
+  runas (Sam) { SignOutEverywhere(Person("mo@desk.test"), "Laptop stolen"); }
+  runas (Mo) { Assert.False(TakePresence(proof, act)); }
+}
+
+[Test(Team)]
 void a_person_sees_what_was_done_to_their_own_access_and_nobody_elses() {
   var mo = Person("mo@desk.test");
   var ada = Person("ada@desk.test");

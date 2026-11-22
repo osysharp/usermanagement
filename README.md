@@ -14,7 +14,7 @@ The **user manager**: who is in the app, what each of them may do, and who chang
 ```osy
 // app.osy
 use Osysharp.Identity@0;
-use Osysharp.UserAccounts@1;
+use Osysharp.UserAccounts@2;
 use Osysharp.Organizations@0;
 use Osysharp.Invitations@2;
 use Osysharp.UserManagement@0;

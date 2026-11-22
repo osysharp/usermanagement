@@ -199,12 +199,21 @@ workflow AccessChangeFlow {
         c.Refusal = refused;
         goto Refused;
       }
+      EndPresenceAfter(c);
       goto Applied;
     }
   }
   terminal success Applied { }
   terminal error Refused { Message = "access change refused"; }
   terminal cancel Expired { Message = "access change expired"; }
+}
+
+/// A sign-out everywhere, a switch-off and a reset second step end the person's live presence proofs too: no proof made
+/// before the change approves anything after it. Asked by the run itself, as its actor, once the change is applied.
+void EndPresenceAfter(AccessChange change) {
+  if (change.Kind != AccessChangeKind.SignedOutEverywhere && change.Kind != AccessChangeKind.Deactivated
+      && change.Kind != AccessChangeKind.SecondFactorReset) { return; }
+  if (change.Person is User account) { EndPresenceOf(account.Id); }
 }
 
 /// How long a change may wait for its run to apply it. After that it is expired, not made.

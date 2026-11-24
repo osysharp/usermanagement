@@ -251,6 +251,8 @@ public string Describe(AccessChange c) {
   if (c.Kind == AccessChangeKind.IntegrationAdded && c.Role == null) { return $"Added the integration “{c.IntegrationName ?? ""}” with no role"; }
   if (c.Kind == AccessChangeKind.IntegrationAdded) { return $"Added the integration “{c.IntegrationName ?? ""}” as {role}"; }
   if (c.Kind == AccessChangeKind.IntegrationReassigned) { return $"Became the owner of the integration “{c.IntegrationName ?? ""}”"; }
+  if (c.Kind == AccessChangeKind.AddressChanged && c.OldAddressProven) { return $"Asked to move the address from {c.OldAddress ?? ""} to {c.NewAddress ?? ""}: it moves once the new one confirms"; }
+  if (c.Kind == AccessChangeKind.AddressChanged) { return $"Changed the address from {c.OldAddress ?? ""} to {c.NewAddress ?? ""}, not proven yet"; }
   return c.Kind.Label;
 }
 

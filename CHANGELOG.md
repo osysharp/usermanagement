@@ -1,5 +1,17 @@
 # Osysharp.UserManagement — changes
 
+## 0.18.0
+- `ChangeAddress(person, newAddress, reason, presence)`: a people manager moves somebody's sign-in address, recorded as an
+  access change (`AccessChangeKind.AddressChanged`, appended; `AccessChange.OldAddress`, `NewAddress`, `OldAddressProven`)
+  and made by Osysharp.UserAccounts' `AskAddressFor`, which trusts the new address only once it is proven. A reason is
+  required, a manager never moves their own address here, and the change is recorded only through the function
+  (`deny create where Kind == AddressChanged except via ChangeAddress`), after the manager's presence for that person and
+  that address (`AddressChangeAct`) is taken.
+- `PeopleSetup.Presence` (`PeoplePresence`): how a manager shows they are present for such a change — the UserAccounts
+  kit's presence proof by default (`StartPresence`/`ProvePresence`, taken once); derive and override `Require` to ask it
+  another way (Admin asks a factor that has settled for 72 hours).
+- Needs Osysharp.UserAccounts 2.2.0.
+
 ## 0.15.0
 - The hourly sweep reaches a change that has NO run (one recorded before `AccessChangeFlow` was deployed): the workflow names
   who may start it by hand, `StartedBy = u => u == Actor.Of<AccessChanger>()`. With the default door ("may change the row")

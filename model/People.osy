@@ -29,6 +29,29 @@ public class PeopleSetup {
   /// Who the people list shows — everybody by default; derive and override to show only the team (a helpdesk's
   /// customers sign in too, and are not who its admins look after here).
   public PeopleDirectory Directory = new PeopleDirectory();
+  /// How a manager shows they are here, in person, for a change that needs it — an address change (`ChangeAddress`).
+  /// The kit's presence proof by default; derive and override to take it the app's own way.
+  public PeoplePresence Presence = new PeoplePresence();
+}
+
+/// How a manager shows they are present for a change that needs a person and not only a session — moving somebody's
+/// sign-in address (`ChangeAddress`), which is how an account is taken over. By default the UserAccounts kit's presence:
+/// the manager proves it with a passkey, or their password and the current code of their authenticator app
+/// (`StartPresence`/`ProvePresence`, for the act `AddressChangeAct` names), and it is taken here, once. Derive and override
+/// `Require` to ask it another way — an app that asks more of a factor before it counts:
+///
+///     public class SettledPresence : PeoplePresence {
+///       public override void Require(string proof, string act) { RequireMyPresence(proof, act); }
+///     }
+///     app.People = new PeopleSetup { …, Presence = new SettledPresence() };
+public class PeoplePresence {
+  /// Refuse unless the signed-in manager proved presence for `act` and this takes the proof, once. Called as the manager,
+  /// before anything is recorded.
+  public virtual void Require(string proof, string act) {
+    if (!TakePresence(proof, act)) {
+      throw new NotAuthorized("Confirm it's you first — with your passkey, or your password and the current code from your authenticator app.");
+    }
+  }
 }
 
 /// Who the user manager lists — everybody with an account by default, but never a declared actor's (a workflow's run, an
@@ -69,6 +92,7 @@ public enum AccessChangeKind {
   [Label("API key revoked")] ApiKeyRevoked,
   [Label("Integration added")] IntegrationAdded,
   [Label("Integration reassigned")] IntegrationReassigned,
+  [Label("Address changed")] AddressChanged,
 }
 
 /// Where a change stands — applied in the same commit that records it, or refused (with the reason) when it breaks a rule
@@ -109,6 +133,11 @@ public entity AccessChange {
   /// for it from then on.
   [MaxLength(100)] string? IntegrationName;
   Integration? Integration;
+  /// An `AddressChanged` change: the address it was asked from and to, and whether the old one was proven then — a proven
+  /// account keeps signing in with it until the new one confirms; an unproven one has the new one in its place at once.
+  [MaxLength(255)] string? OldAddress;
+  [MaxLength(255)] string? NewAddress;
+  bool OldAddressProven = false;
   [MaxLength(500)] string Reason = "";
   /// When it was asked for — the commit that recorded it, written by the platform: nobody sets it, so nobody keeps a
   /// change fresh. Its age is what expires a change that waited too long (`AccessChangeWaitsAtMost`).
@@ -125,6 +154,9 @@ public entity AccessChange {
     deny create where By != user;
     // `Role != null` first: a change with no role is unknown to `Role == …`, and an unknown deny applies.
     deny create where Role != null && Role == role.Authenticator;
+    // An address change is made only by `ChangeAddress`, which takes the manager's presence first.
+    // SECURITY-INVARIANT(people-an-address-change-needs-the-manager-present).
+    deny create where Kind == AccessChangeKind.AddressChanged except via ChangeAddress;
     // Its run reads it and writes what became of it — and nothing a manager decided.
     allow read when user == Actor.Of<AccessChanger>();
     allow update Refusal, Integration when user == Actor.Of<AccessChanger>();
@@ -147,6 +179,7 @@ policy Osysharp.UserAccounts.DeactivatesAccounts += user == Actor.Of<AccessChang
 policy Osysharp.UserAccounts.KeepsApiKeys += user == Actor.Of<AccessChanger>();
 policy ResetsSecondFactor += user == Actor.Of<AccessChanger>();
 policy SendsAppMail += user == Actor.Of<AccessChanger>();
+policy Osysharp.UserAccounts.AsksAddressChangesFor += user == Actor.Of<AccessChanger>();
 policy ManagesMemberships += user == Actor.Of<AccessChanger>();
 policy RemovesMemberships += user == Actor.Of<AccessChanger>();
 
@@ -388,6 +421,11 @@ public string AccessProblem(Principal person, Principal by, AccessChangeKind kin
       return $"The app needs at least one active {(name != "" ? name : "holder of that role")} — give the role to somebody else first.";
     }
   }
+  if (kind == AccessChangeKind.AddressChanged) {
+    if (!(person is User)) { return "This account has no sign-in address of its own to change."; }
+    if (person.Id == by.Id) { return "Change your own address from your account page."; }
+    if (reason.Trim() == "") { return "Say why — an address change is recorded with its reason (who asked, and how you knew it was them)."; }
+  }
   if (kind == AccessChangeKind.SecondFactorReset) {
     if (reason.Trim() == "") { return "Say why — a reset second factor is recorded with its reason (who asked, and how you knew it was them)."; }
     if (!(person is User)) { return "This account does not sign in with two-step sign-in here, so there is nothing to reset."; }
@@ -442,6 +480,14 @@ void ApplyAccessChange(AccessChange change) {
     return;
   }
   if (change.Kind == AccessChangeKind.SignedOutEverywhere) { Security.SignOutEverywhere(person.Id); return; }
+  // The address moves through the UserAccounts kit's asked change, which trusts the new address only once it is proven
+  // (SECURITY-INVARIANT accounts-an-asked-address-is-trusted-only-once-proven) and ends the sessions when it takes effect.
+  if (change.Kind == AccessChangeKind.AddressChanged) {
+    if (person is User account) {
+      AskAddressFor(account, change.NewAddress ?? "", change.Reason, change.By.DisplayName != "" ? change.By.DisplayName : change.By.Email);
+    }
+    return;
+  }
   var org = change.Organization!;
   if (change.Kind == AccessChangeKind.JoinedOrganization) { Join(org, person, MembershipSource.Local); return; }
   if (change.Kind == AccessChangeKind.LeftOrganization) { Leave(org, person); return; }
@@ -482,6 +528,45 @@ public AccessChange Reactivate(Principal person, string reason = "") { return Re
 public AccessChange ResetSecondFactor(Principal person, string reason) { return RecordAccessChange(person, AccessChangeKind.SecondFactorReset, null, null, reason); }
 /// End every session `person` has, wherever it is.
 public AccessChange SignOutEverywhere(Principal person, string reason = "") { return RecordAccessChange(person, AccessChangeKind.SignedOutEverywhere, null, null, reason); }
+/// The act a manager proves presence for (`StartPresence`/`ProvePresence`) before moving `person` to `newAddress`
+/// (`ChangeAddress`): bound to the person and the address, so a proof for one change approves no other.
+public string AddressChangeAct(Principal person, string newAddress) { return "address:" + person.Id + ":" + NormalisedEmail(newAddress); }
+
+/// Move `person`'s sign-in address to `newAddress`, giving `reason` (who asked, and how you knew it was them), with
+/// `presence` — the manager's presence proof for `AddressChangeAct(person, newAddress)` (`PeopleSetup.Presence`). Recorded
+/// as an access change (`AddressChanged`, from and to) and made by the UserAccounts kit's `AskAddressFor`, which trusts the
+/// new address only once it is proven:
+///   - an address that was never proven is replaced at once, still unproven: a fresh link and code go to the new one, the
+///     old one's pending proof is spent, and every session the person has ends;
+///   - a proven address goes on signing in until the new one confirms (then every session ends); the old one is told who
+///     asked, with a link that calls the move off.
+/// Throws the sentence to show for a malformed address, the person's own, one another account uses, no reason, the
+/// manager's own account, or no presence. Committed.
+///
+/// SECURITY-INVARIANT(people-an-address-change-needs-the-manager-present): an `AddressChanged` change is recorded only by
+/// this function (`AccessChange`'s `deny create where Kind == AddressChanged except via ChangeAddress`), and only once the
+/// manager's presence for that person and that address is taken (`PeopleSetup.Presence`), after every other check. Guarded
+/// by tests/access.test.osy (an_address_change_needs_presence_and_is_recorded_from_and_to).
+[Authorize(ManagesPeople)]
+public AccessChange ChangeAddress(Principal person, string newAddress, string reason, string presence) {
+  var me = Session.CurrentUser;
+  if (me == null) { throw new NotAuthorized("Sign in to change an address."); }
+  var address = NormalisedEmail(newAddress);
+  if (!LooksLikeEmail(address)) { throw new ValidationException("That isn't an email address. Check it and type it again."); }
+  if (address == person.Email) { throw new ValidationException("That is already their address."); }
+  var problem = AccessProblem(person, me!, AccessChangeKind.AddressChanged, null, null, reason);
+  if (problem != "") { throw new ValidationException(problem); }
+  if (Principal.Any(p => p.Email == address && p.Id != person.Id)) {
+    throw new ValidationException("Another account already uses that address. Choose another, or deal with that account first.");
+  }
+  App.Setting<PeopleSetup>().Presence.Require(presence, AddressChangeAct(person, address));
+  var made = new AccessChange { Person = person, By = me!, Kind = AccessChangeKind.AddressChanged, Reason = reason.Trim(),
+                                OldAddress = person.Email, NewAddress = address, OldAddressProven = person.EmailVerifiedAt != null };
+  UnitOfWork.Commit();
+  ThrowUnlessApplied(made.Id, "The address was not changed.");
+  return AccessChange.Single(c => c.Id == made.Id);
+}
+
 /// Put `person` in `org`.
 public AccessChange AddToOrganization(Organization org, Principal person, string reason = "") { return RecordAccessChange(person, AccessChangeKind.JoinedOrganization, null, org, reason); }
 /// Take `person` out of `org`, with every role they held there.

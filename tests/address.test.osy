@@ -1,0 +1,61 @@
+// A manager moves somebody's sign-in address (`ChangeAddress`): only present, only with a reason, recorded from and to — and
+// the new address is trusted only once it is proven (Osysharp.UserAccounts' `AskAddressFor`).
+// SECURITY-INVARIANT(people-an-address-change-needs-the-manager-present),
+// SECURITY-INVARIANT(accounts-an-asked-address-is-trusted-only-once-proven).
+
+using Osysharp.Identity;
+using Osysharp.UserAccounts;
+using Osysharp.UserManagement;
+using Osysharp.Mail;
+
+[TestFixture]
+void AddressTeam() {
+  var lee = new User { Email = "lee@addr.test", DisplayName = "Lee", PasswordHash = Security.HashPassword("correct-horse-7"),
+                       EmailVerifiedAt = DateTime.UtcNow };
+  new RoleGrant { Member = lee, Role = AppRole.Admin };
+  // Made with a mistyped address, never proven.
+  new User { Email = "kim@addr.tset", DisplayName = "Kim", PasswordHash = Security.HashPassword("correct-horse-8") };
+}
+
+principal AddrLee => User.Single(u => u.Email == "lee@addr.test");
+
+/// What a manager recording the change by hand would be — past `ChangeAddress`, and so past its presence.
+void AddrRecordDirectly(User kim, string why) {
+  new AccessChange { Person = kim, By = User.Single(u => u.Email == "lee@addr.test"), Kind = AccessChangeKind.AddressChanged, Reason = why,
+                     NewAddress = "kim@addr.test" };
+  UnitOfWork.Commit();
+}
+
+[Test(AddressTeam)]
+void an_address_change_needs_presence_and_is_recorded_from_and_to() {
+  var key = "";
+  runas (AuthBootstrap) {
+    key = NewSecondFactorSetup("lee@addr.test").Key;
+    EnableSecondFactor("lee@addr.test", "correct-horse-7", key, Totp.Code(key));
+  }
+  UnitOfWork.Commit();
+  var why = "Kim asked at the front desk, with her badge";
+  runas (AddrLee) {
+    var kim = User.Single(u => u.Email == "kim@addr.tset");
+    // No presence: refused, nothing recorded — and no direct record past the function either.
+    Assert.Contains("Confirm it's you first", Assert.Throws<NotAuthorized>(() => ChangeAddress(kim, "kim@addr.test", why, "")).Message);
+    Assert.Denied(() => AddrRecordDirectly(kim, why));
+    Assert.False(AccessChange.Any(c => c.Kind == AccessChangeKind.AddressChanged));
+    // Present: by her password and the authenticator's current code, for this person and this address.
+    var proof = ProvePresence(AddressChangeAct(kim, "kim@addr.test"), "", "", "correct-horse-7", Totp.Code(key, DateTime.UtcNow.AddSeconds(30)));
+    ChangeAddress(kim, "kim@addr.test", why, proof);
+    var made = AccessChange.Single(c => c.Kind == AccessChangeKind.AddressChanged);
+    Assert.Equal("kim@addr.tset", made.OldAddress);
+    Assert.Equal("kim@addr.test", made.NewAddress);
+    Assert.False(made.OldAddressProven);
+    Assert.Equal(why, made.Reason);
+    Assert.Equal(AccessChangeState.Applied, made.State);
+  }
+  runas (AuthBootstrap) {
+    // Replaced, and not proven: the manager vouched for nothing. A code went to the new address.
+    var kim = User.Single(u => u.DisplayName == "Kim");
+    Assert.Equal("kim@addr.test", kim.Email);
+    Assert.Null(kim.EmailVerifiedAt);
+    Assert.Equal(1, OutgoingMail.Count(m => m.To == "kim@addr.test" && m.Subject.StartsWith("Confirm your address")));
+  }
+}

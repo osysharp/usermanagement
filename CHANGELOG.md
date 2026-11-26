@@ -1,5 +1,19 @@
 # Osysharp.UserManagement — changes
 
+## 0.19.0
+- `IssueApiKeySealedFor(person, name, to:, kind:, why:, reason:, tools:, expiresIn:)`: a people manager issues a key SEALED
+  (fcs1) for a host row whose entity declares `[SealRecipient]` (`to:` is an `Entity`), through
+  `Security.NewApiKeySealedFor` — so the key is never shown to anybody, this code included. The same `ApiKeyIssued` access
+  change, run and applied in the same commit, the same two key slots and refusals as `IssueApiKey`; it answers
+  `IssuedSealedApiKey { Id, Sealed }`, sealed under the fcs1 `name` = the key record's id.
+- `IssueApiKeySealedForAsActor(…)`: the same, run by one of the app's own actors the app lets issue keys —
+  `[Extensible] virtual policy IssuesApiKeys => false;`, granted per actor
+  (`policy IssuesApiKeys => user == Actor.Of<ReviewKeys>();`). Such an actor may create an `ApiKey`
+  and an `ApiKeyIssued` access change in its own name, and reads only those.
+- `expiresIn:` (a `TimeSpan`) on `IssueApiKey` and both new functions: a key that stops working that long after it is
+  issued (401 on the tool server and the REST API from then on). `ApiKey.ExpiresAt` (appended) keeps when.
+- Needs osy 0.25.0.
+
 ## 0.18.0
 - `ChangeAddress(person, newAddress, reason, presence)`: a people manager moves somebody's sign-in address, recorded as an
   access change (`AccessChangeKind.AddressChanged`, appended; `AccessChange.OldAddress`, `NewAddress`, `OldAddressProven`)

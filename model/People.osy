@@ -151,6 +151,10 @@ public entity AccessChange {
     allow read when ManagesPeople || IsAuthenticated where Person == user;
     allow read when ManagesPeople;
     allow create when ManagesPeople;
+    // An actor the app lets issue keys (`IssuesApiKeys`, IssueApiKeySealedForAsActor) records a key's issue and nothing
+    // else, in its own name — and reads only the changes it made.
+    allow create when IssuesApiKeys where Kind == AccessChangeKind.ApiKeyIssued;
+    allow read when IssuesApiKeys where By == user;
     deny create where By != user;
     // `Role != null` first: a change with no role is unknown to `Role == …`, and an unknown deny applies.
     deny create where Role != null && Role == role.Authenticator;

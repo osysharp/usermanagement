@@ -164,3 +164,19 @@ entity DeskNotice {
 public class NightlyReport {
   public static User Principal => new User { Email = "reports@desk.test", DisplayName = "Nightly report" };
 }
+
+// ── PLATFORM-765: a key sealed for a build host (tests/api-keys.test.osy) ───────────────────────────────────────────────
+
+/// A build host a review's key is sealed for — its P-256 public key, by name.
+entity BuildHost {
+  [Required, MaxLength(100)] string Name;
+  [SealRecipient(Label = Name)] string? SealingKey;
+  security { allow read, create when IsAuthenticated; }
+}
+
+/// The app's own reviewer robot, which issues review keys from server code — and the one actor the app lets do so.
+[Actor]
+public class ReviewKeys {
+  public static User Principal => new User { Email = "review-keys@desk.test", DisplayName = "Review keys" };
+}
+policy IssuesApiKeys => user == Actor.Of<ReviewKeys>();

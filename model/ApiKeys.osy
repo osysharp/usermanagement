@@ -38,13 +38,20 @@ public entity ApiKey {
   [MaxLength(255)] string? PendingHash;
   DateTime? RevokedAt;
   Principal? RevokedBy;
+  /// When the key stops working (UTC) — it is refused from then on, on the app's tool server and its REST API alike; null for
+  /// a key with no end of its own. The instant is part of the key and of its hash, so nobody moves it.
+  DateTime? ExpiresAt;
 
   security {
     // The managers read every key; a person reads the keys they hold.
     allow read when ManagesPeople || IsAuthenticated where Holder == user;
     allow read when ManagesPeople;
-    // A manager issues a key — in their own name. Nobody edits or deletes one: its run writes it.
+    // …and an actor the app lets issue keys (`IssuesApiKeys`) reads the ones it issued.
+    allow read when IssuesApiKeys where IssuedBy == user;
+    // A manager issues a key — or an actor the app lets issue them — in their own name. Nobody edits or deletes one: its run
+    // writes it.
     allow create when ManagesPeople;
+    allow create when IssuesApiKeys;
     deny create where IssuedBy != user;
     // Nobody reads the pending hash but the run that moves it onto the account.
     deny read PendingHash when user != Actor.Of<AccessChanger>();
@@ -53,6 +60,11 @@ public entity ApiKey {
     allow update Slot, PendingHash, RevokedAt, RevokedBy when user == Actor.Of<AccessChanger>();
   }
 }
+
+/// Which of the app's own actors may issue API keys sealed for a host (`IssueApiKeySealedForAsActor`) — none, until the app
+/// says so for its own actor: `policy IssuesApiKeys => user == Actor.Of<ReviewKeys>();`. As the
+/// identity kit's `KeepsApiKeys` is granted to this kit's run, one actor at a time.
+[Extensible] virtual policy IssuesApiKeys => false;
 
 /// What issuing a key answers — the key, shown ONCE, and the record of it.
 public class IssuedApiKey {
@@ -66,8 +78,10 @@ public class IssuedApiKey {
 /// reaches only those tool sets of the app's tool server; "" a key that reaches everything its holder may. Committed.
 /// Only a people manager calls it — anybody else is refused before anything is minted, so the mint's refusal (the names a key
 /// may carry, or the organization's cap) is never said to them.
+/// `expiresIn` (`TimeSpan.FromHours(2)`) mints a key that stops working that long after it is issued; null, one with no end of
+/// its own.
 [Authorize(ManagesPeople)]
-public IssuedApiKey IssueApiKey(Principal person, string name, string reason = "", string tools = "") {
+public IssuedApiKey IssueApiKey(Principal person, string name, string reason = "", string tools = "", TimeSpan? expiresIn = null) {
   var me = Session.CurrentUser;
   if (me == null) { throw new NotAuthorized("Sign in to issue an API key."); }
   var shown = name.Trim();
@@ -78,16 +92,77 @@ public IssuedApiKey IssueApiKey(Principal person, string name, string reason = "
     throw new ValidationException("This account already holds two keys — revoke one before issuing another.");
   }
   var scope = tools.Trim();
-  var key = scope == "" ? Security.NewApiKey() : Security.NewApiKey(Text.Split(scope, ","));
-  var sets = key.Contains("~") ? key.Substring(key.IndexOf("~") + 1) : "";
-  var secret = key.Contains("~") ? key.Substring(0, key.IndexOf("~")) : key;
-  var made = new ApiKey { Holder = person, Name = shown, IssuedBy = me!, IssuedAt = DateTime.UtcNow,
+  var key = "";
+  if (expiresIn == null) { key = scope == "" ? Security.NewApiKey() : Security.NewApiKey(Text.Split(scope, ",")); }
+  else { key = scope == "" ? Security.NewApiKey(expiresIn: expiresIn!.Value) : Security.NewApiKey(Text.Split(scope, ","), expiresIn: expiresIn!.Value); }
+  // `pk_…[~tools][!expiry]` — the tool sets and the random part, never the expiry's digits, are what the list shows.
+  var plain = key.Contains("!") ? key.Substring(0, key.IndexOf("!")) : key;
+  var sets = plain.Contains("~") ? plain.Substring(plain.IndexOf("~") + 1) : "";
+  var secret = plain.Contains("~") ? plain.Substring(0, plain.IndexOf("~")) : plain;
+  DateTime? ends = expiresIn == null ? null : DateTime.UtcNow.Add(expiresIn!.Value);
+  var made = new ApiKey { Holder = person, Name = shown, IssuedBy = me!, IssuedAt = DateTime.UtcNow, ExpiresAt = ends,
                           Ending = "…" + secret.Substring(secret.Length - 4), Tools = sets, PendingHash = Security.HashApiKey(key) };
   var change = RecordKeyChange(person, AccessChangeKind.ApiKeyIssued, made, reason);
   // The run puts the hash on the account in the same commit — or refuses (a key this page never issued fills both slots),
   // or could not run: in either case the key it would have been is worthless and is not handed out.
   ThrowUnlessApplied(change.Id, "The key was not issued.");
   return new IssuedApiKey { Id = made.Id, Key = key };
+}
+
+/// What issuing a key SEALED for a host answers — the record of it, and the key as fcs1 text only that host opens. The key
+/// itself was never an Osy# value: it was minted, hashed and sealed inside the runtime (`Security.NewApiKeySealedFor`).
+public class IssuedSealedApiKey {
+  public Guid Id;
+  /// The key sealed for the host — `fcs1.…`, bound to the host's label, `kind` and this record's id (the fcs1 `name`).
+  public string Sealed = "";
+}
+
+/// Issue `person` a new API key named `name`, SEALED for the host row `to` (a row whose entity declares `[SealRecipient]`), so
+/// the key is never shown to anybody — not to the manager, not to this code: only the host's private key opens it. `kind`
+/// is the label the host opens it as, `why` is recorded with the seal (`SecretUse`), `reason` with the access change. The
+/// fcs1 `name` is the record's id. Otherwise exactly `IssueApiKey`: the same access change, run and applied in the same
+/// commit, the same two key slots, the same refusals. `tools` and `expiresIn` as there. Committed.
+[Authorize(ManagesPeople)]
+public IssuedSealedApiKey IssueApiKeySealedFor(Principal person, string name, Entity to, string kind, string why,
+                                               string reason = "", string tools = "", TimeSpan? expiresIn = null) {
+  var me = Session.CurrentUser;
+  if (me == null) { throw new NotAuthorized("Sign in to issue an API key."); }
+  return IssueSealed(person, me!, name, to, kind, why, reason, tools, expiresIn);
+}
+
+/// `IssueApiKeySealedFor`, run by one of the app's own actors the app lets issue keys (`IssuesApiKeys`) — a key minted from
+/// server code (a review session's), recorded in the actor's name. Nobody signed in as a person calls it.
+[Authorize(IssuesApiKeys)]
+public IssuedSealedApiKey IssueApiKeySealedForAsActor(Principal person, string name, Entity to, string kind, string why,
+                                                      string reason = "", string tools = "", TimeSpan? expiresIn = null) {
+  var me = Session.CurrentUser;
+  if (me == null) { throw new NotAuthorized("Only an actor the app lets issue keys runs this."); }
+  return IssueSealed(person, me!, name, to, kind, why, reason, tools, expiresIn);
+}
+
+IssuedSealedApiKey IssueSealed(Principal person, Principal me, string name, Entity to, string kind, string why,
+                               string reason, string tools, TimeSpan? expiresIn) {
+  var shown = name.Trim();
+  if (shown == "") { throw new ValidationException("Say what the key is for — it is how you will recognise it in the list."); }
+  if (shown.Length > 100) { shown = shown.Substring(0, 100); }
+  if (!person.IsActive) { throw new ValidationException("This account is deactivated — reactivate it before issuing it a key."); }
+  if (ApiKey.Count(k => k.Holder == person && k.Slot > 0 && k.RevokedAt == null) >= 2) {
+    throw new ValidationException("This account already holds two keys — revoke one before issuing another.");
+  }
+  var scope = tools.Trim();
+  List<string> sets = scope == "" ? [] : Text.Split(scope, ",").ToList();
+  var made = new ApiKey { Holder = person, Name = shown, IssuedBy = me, IssuedAt = DateTime.UtcNow };
+  var minted = expiresIn == null
+    ? Security.NewApiKeySealedFor(sets, to: to, kind: kind, why: why, name: made.Id.ToString())
+    : Security.NewApiKeySealedFor(sets, to: to, kind: kind, why: why, name: made.Id.ToString(), expiresIn: expiresIn!.Value);
+  made.Ending = "…" + minted.Ending;
+  made.Tools = minted.Tools;
+  made.ExpiresAt = minted.ExpiresAt;
+  made.PendingHash = minted.Hash;
+  var change = RecordKeyChange(person, AccessChangeKind.ApiKeyIssued, made, reason);
+  // As `IssueApiKey`: a change its run did not apply leaves the key worthless, and the sealed text is not handed out.
+  ThrowUnlessApplied(change.Id, "The key was not issued.");
+  return new IssuedSealedApiKey { Id = made.Id, Sealed = minted.Sealed };
 }
 
 /// Revoke `key` — the next request that presents it is refused. Committed.

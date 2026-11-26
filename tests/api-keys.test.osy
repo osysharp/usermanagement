@@ -139,3 +139,83 @@ void nobody_issues_a_key_to_or_changes_the_access_of_the_apps_own_accounts() {
     Assert.Equal(0, AccessChange.Count(c => c.Person == changer));
   }
 }
+
+// A KEY SEALED FOR A HOST (PLATFORM-765): `IssueApiKeySealedFor` issues a key exactly as `IssueApiKey` does — an access change its
+// run applies, a key slot on the account — but answers it only sealed (fcs1) for the host row, so nobody, the manager included, is
+// shown the key. It reaches only its tool sets and ends when it was told to; a non-manager is refused before anything is minted, and
+// the app's own actor issues one only once the app says it may (`IssuesApiKeys`). SECURITY-INVARIANT(a-minted-key-is-sealed-only-to-a-declared-recipient).
+string HostKey() { return "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEEYiOTxMFRx6nQ0T+oUZ+Mg4ewf78+5A8Ade6U8D76HltIHBg602I3FsMsbG1/+aaXpHByOL2cQdjdOIUdSB0vQ=="; }
+
+[Test(Team)]
+void a_key_sealed_for_a_host_is_issued_as_an_access_change_and_shown_to_nobody() {
+  var ada = Person("ada@desk.test");
+  IssuedSealedApiKey issued = new IssuedSealedApiKey();
+  runas (Sam) {
+    var host = new BuildHost { Name = "ft-mini", SealingKey = HostKey() };
+    UnitOfWork.Commit();
+    issued = IssueApiKeySealedFor(ada, "Design review", to: host, kind: "design-read", why: "a review on ft-mini",
+                                  reason: "the build host reads one design", tools: "me", expiresIn: TimeSpan.FromHours(2));
+  }
+  Assert.StartsWith("fcs1.", issued.Sealed);
+  Assert.DoesNotContain("pk_", issued.Sealed);
+  runas (Sam) {
+    var k = ApiKey.Single(x => x.Id == issued.Id);
+    Assert.Equal(1, k.Slot);
+    Assert.Equal("me", k.Tools);
+    Assert.Equal(5, k.Ending.Length);
+    Assert.NotNull(k.ExpiresAt);
+    Assert.True(k.ExpiresAt!.Value > DateTime.UtcNow.AddMinutes(110));
+    var change = AccessChange.Single(c => c.Person == ada && c.Kind == AccessChangeKind.ApiKeyIssued);
+    Assert.Equal(AccessChangeState.Applied, change.State);
+    Assert.Equal("the build host reads one design", change.Reason);
+  }
+  // A person who does not manage people is refused before any key is minted.
+  runas (Ada) {
+    var host = BuildHost.Single(h => h.Name == "ft-mini");
+    Assert.Denied(() => IssueApiKeySealedFor(ada, "My own", to: host, kind: "design-read", why: "mine"));
+  }
+  runas (Sam) { Assert.Equal(1, ApiKey.Count()); }
+}
+
+[Test(Team)]
+void the_apps_own_actor_issues_a_sealed_key_once_the_app_lets_it() {
+  var ada = Person("ada@desk.test");
+  IssuedSealedApiKey issued = new IssuedSealedApiKey();
+  runas (Actor.Of<ReviewKeys>()) {
+    var host = new BuildHost { Name = "ft-mini", SealingKey = HostKey() };
+    UnitOfWork.Commit();
+    issued = IssueApiKeySealedForAsActor(ada, "Review session", to: host, kind: "design-read", why: "a review session",
+                                         tools: "me", expiresIn: TimeSpan.FromMinutes(30));
+  }
+  Assert.StartsWith("fcs1.", issued.Sealed);
+  runas (Sam) {
+    var k = ApiKey.Single(x => x.Id == issued.Id);
+    Assert.Equal(1, k.Slot);
+    Assert.Equal("review-keys@desk.test", k.IssuedBy.Email);
+  }
+  // …and an actor the app did not name may not, nor may a manager call the actor's door.
+  runas (Actor.Of<NightlyReport>()) {
+    var host = BuildHost.Single(h => h.Name == "ft-mini");
+    Assert.Denied(() => IssueApiKeySealedForAsActor(ada, "Not mine", to: host, kind: "design-read", why: "no"));
+  }
+  runas (Sam) {
+    var host = BuildHost.Single(h => h.Name == "ft-mini");
+    Assert.Denied(() => IssueApiKeySealedForAsActor(ada, "Not mine", to: host, kind: "design-read", why: "no"));
+    Assert.Equal(1, ApiKey.Count());
+  }
+}
+
+// A KEY THAT ENDS (PLATFORM-765): `IssueApiKey(…, expiresIn:)` issues a key that works until then — and the list keeps when.
+[Test(Team)]
+void a_key_issued_to_expire_works_until_then_and_says_when() {
+  var ada = Person("ada@desk.test");
+  IssuedApiKey issued = new IssuedApiKey();
+  runas (Sam) { issued = IssueApiKey(ada, "One afternoon", "", "me", TimeSpan.FromHours(4)); }
+  Assert.Contains("ada@desk.test", Me(issued.Key));
+  runas (Sam) {
+    var k = ApiKey.Single(x => x.Id == issued.Id);
+    Assert.Equal("me", k.Tools);
+    Assert.Equal(5, k.Ending.Length);
+    Assert.NotNull(k.ExpiresAt);
+  }
+}
